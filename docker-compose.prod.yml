@@ -1,0 +1,136 @@
+# Hosted demo. Everything the stack needs is inside the images, so a server only needs
+# this file, caddy/Caddyfile, .env and .env.db:
+#
+#   docker compose -f docker-compose.prod.yml up -d            (pulls or builds, then starts)
+#
+# Start order: db -> migrate -> seed -> ingestor -> rag_server -> caddy. migrate, seed and
+# ingestor are one-shot: they do their work, exit, and do nothing on later starts.
+#
+# Differences from docker-compose.yml (the dev stack): images are built from the `prod`
+# targets with the code baked in (no bind mounts, no reload, no debugger), and the only
+# published ports are Caddy's 80/443 -- Postgres, Qdrant, Redis and the API are reachable
+# only inside the Compose network.
+#
+# To deploy without building on the server, set IMAGE_PREFIX to a registry path
+# (e.g. ghcr.io/<user>/fraud-investigator) in the shell or .env, then
+# `build` + `push` locally and `pull` on the server.
+name: fraud-investigator-prod
+
+services:
+    db:
+        image: ${IMAGE_PREFIX:-fraud-investigator}-db:prod
+        build:
+            context: .
+            dockerfile: ./db_init/Dockerfile
+        restart: unless-stopped
+        env_file:
+            - .env.db
+        volumes:
+            - db_data:/var/lib/postgresql/data
+        healthcheck:
+            test: ["CMD-SHELL","pg_isready -U $${POSTGRES_USER} -d shop"]
+            interval: 5s
+            retries: 10
+
+    qdrant:
+        image: qdrant/qdrant:latest
+        restart: unless-stopped
+        volumes:
+            - qdrant_data:/qdrant/storage
+        environment:
+            QDRANT__SERVICE__MAX_REQUEST_SIZE_MB: 128
+
+    redis:
+        image: redis:7-alpine
+        restart: unless-stopped
+        volumes:
+            - redis_data:/data
+
+    # 1. applies pending Alembic migrations
+    migrate:
+        image: ${IMAGE_PREFIX:-fraud-investigator}-migrate:prod
+        build:
+            context: .
+            dockerfile: ./migrations/Dockerfile
+        depends_on:
+            db:
+                condition: service_healthy
+        env_file:
+            - .env
+
+    # 2. loads the synthetic store data, only if the tables are still empty
+    seed:
+        image: ${IMAGE_PREFIX:-fraud-investigator}-db:prod
+        entrypoint: ["/seed/seed.sh"]
+        depends_on:
+            migrate:
+                condition: service_completed_successfully
+        env_file:
+            - .env
+
+    # 3. builds the session vector store; checkpointed, so later starts find nothing new
+    ingestor:
+        image: ${IMAGE_PREFIX:-fraud-investigator}-ingestor:prod
+        build:
+            context: .
+            dockerfile: ./ingestor/Dockerfile
+            target: prod
+        volumes:
+            # BGE-M3 weights, downloaded on first start and shared with the server
+            - model_cache:/app/shared/model_cache
+            - ingest_state:/state
+        depends_on:
+            qdrant:
+                condition: service_started
+            seed:
+                condition: service_completed_successfully
+        environment:
+            PYTHONPATH: /app
+            CHECKPOINT_DIR: /state
+        env_file:
+            - .env
+
+    rag_server:
+        image: ${IMAGE_PREFIX:-fraud-investigator}-server:prod
+        build:
+            context: .
+            dockerfile: ./server/Dockerfile
+            target: prod
+        restart: unless-stopped
+        volumes:
+            - model_cache:/app/shared/model_cache
+        depends_on:
+            qdrant:
+                condition: service_started
+            redis:
+                condition: service_started
+            ingestor:
+                condition: service_completed_successfully
+        env_file:
+            - .env
+
+    caddy:
+        image: caddy:2
+        restart: unless-stopped
+        ports:
+            - "80:80"
+            - "443:443"
+        environment:
+            # a domain name for automatic HTTPS; unset serves plain HTTP on :80
+            SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+        volumes:
+            - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy_data:/data
+            - caddy_config:/config
+        depends_on:
+            - rag_server
+
+
+volumes:
+  db_data:
+  qdrant_data:
+  redis_data:
+  model_cache:
+  ingest_state:
+  caddy_data:
+  caddy_config:

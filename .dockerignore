@@ -1,0 +1,10 @@
+# keep local virtualenvs, secrets and caches out of the build context and the images
+.git
+.env*
+env/
+server/env/
+**/__pycache__/
+shared/model_cache/
+model_cache/
+.vscode/
+.claude/

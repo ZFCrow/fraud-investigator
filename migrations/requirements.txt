@@ -1,0 +1,4 @@
+alembic==1.18.4
+SQLAlchemy[asyncio]==2.0.51
+psycopg2-binary==2.9.12
+pydantic-settings==2.14.1

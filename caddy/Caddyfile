@@ -1,0 +1,13 @@
+# Public entry point of the hosted demo (docker-compose.prod.yml).
+# SITE_ADDRESS is a domain name (Caddy then gets an HTTPS certificate by itself);
+# unset, the demo is served over plain HTTP on port 80.
+{$SITE_ADDRESS::80} {
+	# only the chat UI is public; the API and its docs stay inside the Compose network
+	@ui path /ui /ui/*
+	handle @ui {
+		reverse_proxy rag_server:8000
+	}
+	handle {
+		redir * /ui
+	}
+}

@@ -1,0 +1,131 @@
+# dev stack: own project name, container names (hack_*) and shifted host ports, so it can
+# run next to other local stacks without colliding with them
+name: fraud-investigator
+
+services: 
+    db: 
+        container_name: hack_db
+        image: postgres:15
+        restart: always
+        ports: 
+            - "5434:5432"   # 5432 / 5433 are taken by other local Postgres containers
+        env_file:
+            - .env.db
+        volumes: 
+            - db_data:/var/lib/postgresql/data
+            # Mount the init scritps to be run automatically when the container starts for the first time
+            - ./db_init:/docker-entrypoint-initdb.d
+            # synthetic seed data to load manually (see readme)
+            - ./data:/app/data
+        healthcheck:
+            test: ["CMD-SHELL","pg_isready -U $${POSTGRES_USER} -d shop"]
+            interval: 5s
+            retries: 5
+         
+    qdrant: 
+        container_name: hack_qdrant
+        image: qdrant/qdrant:latest
+        restart: unless-stopped
+        ports:
+            - "6335:6333"   # 6333/6334 taken by other local qdrants
+        volumes:
+            - qdrant_data:/qdrant/storage 
+        environment:
+            QDRANT__SERVICE__MAX_REQUEST_SIZE_MB: 128  # raise from 32MB to 128MB
+    
+    
+    # applies pending Alembic migrations, then exits; rag_server and ingestor wait for it
+    migrate:
+        container_name: hack_migrate
+        build:
+            context: .
+            dockerfile: ./migrations/Dockerfile
+        volumes:
+            - ./server:/app/server
+            - /app/server/env
+            - ./shared:/app/shared
+            - ./ingestor:/app/ingestor
+            - ./migrations/alembic:/app/alembic
+            - ./migrations/alembic.ini:/app/alembic.ini
+        depends_on:
+            db:
+                condition: service_healthy
+        environment:
+            PYTHONPATH: /app
+        env_file:
+            - .env
+        profiles:
+            - server
+            - ingestor
+
+    ingestor: 
+        container_name: hack_ingestor
+        build: 
+            context: .
+            dockerfile: ./ingestor/Dockerfile
+            target: dev       # <-- Uses the exact same image and dependencies./ingestor
+        volumes:
+            - ./ingestor:/app/ingestor
+            - ./shared:/app/shared
+        # cpus: "4.0"
+        depends_on: 
+            db: 
+                condition: service_healthy 
+            qdrant:
+                condition: service_started
+            migrate:
+                condition: service_completed_successfully
+        environment:
+            PYTHONPATH: /app
+        env_file:
+            - .env
+        ports:
+            - "5680:5678"    
+        profiles: 
+            - ingestor
+             
+    rag_server: 
+        container_name: hack_rag_server
+        build: 
+            context: .
+            dockerfile: ./server/Dockerfile
+            target: dev
+        volumes: 
+            - ./server:/app/server
+            - /app/server/env # ignore the env during runtime when i bindmount
+            - ./shared:/app/shared
+
+            - ./.chainlit:/app/.chainlit
+            - ./chainlit.md:/app/chainlit.md
+        depends_on: 
+            db: 
+                condition: service_healthy 
+            qdrant:
+                condition: service_started
+            migrate:
+                condition: service_completed_successfully
+        environment:
+            PYTHONPATH: /app
+        env_file:
+            - .env
+        ports: 
+            - "8002:8000"
+            - "5681:5678"  
+        profiles:
+            - server
+
+
+    redis:
+        container_name: hack_redis
+        image: redis:7-alpine
+        restart: unless-stopped
+        ports:
+            - "6380:6379"
+        volumes:
+            - redis_data:/data
+
+
+volumes:
+  db_data:  # named volume, survives container restart/removal
+  qdrant_data:  # named volume for Qdrant data
+  redis_data:  # named volume for Redis data
