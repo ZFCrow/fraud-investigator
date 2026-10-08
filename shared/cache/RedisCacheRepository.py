@@ -35,4 +35,13 @@ class RedisCacheRepository(ICacheRepository):
     async def get_list(self, key: str) -> list[bytes]:
         values = await self._client.lrange(key, 0, -1)
         return values
+
+    async def increment(self, key: str, ttl: Optional[int] = None) -> int:
+        # one MULTI/EXEC transaction: the count and its expiry are set together
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            if ttl is not None:
+                pipe.expire(key, ttl, nx=True)  # NX: only if the key has no expiry yet
+            results = await pipe.execute()
+        return results[0]
     

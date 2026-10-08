@@ -49,9 +49,6 @@ async def main(message: cl.Message):
         await send_stream_request(chat_request, msg)
 
     except httpx.HTTPStatusError as e:
-            # 1. Read the stream into memory first
-            await e.response.aread()
-            
             if e.response.status_code == 429:
                 msg.content = f"⏳ {e.response.json().get('detail', 'Too many requests. Please try again later.')}"
                 await msg.update()
@@ -108,6 +105,10 @@ async def send_stream_request(chat_request, msg):
             headers={"X-Client-Id": client_id()},
         ) as response:
 
+            # an error response has a JSON body (e.g. the rate limiter's message), and it can
+            # only be read while this stream is still open -- not later in the except block
+            if response.is_error:
+                await response.aread()
             response.raise_for_status()
 
             async for line in response.aiter_lines():
