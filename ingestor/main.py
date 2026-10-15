@@ -6,7 +6,7 @@ from ingestor.schemas import IngestionConfig, SESSIONS
 from shared.database.service import setup
 
 # Embeddings 
-from shared.embeddings.BGEM3Embedder import BGEM3Embedder
+from shared.embeddings.NebiusEmbedder import NebiusEmbedder
 from ingestor.embedding.service import PointsEmbeddingService
 
 # Ingestion Service 
@@ -36,7 +36,7 @@ async def main():
 
     # 1.1 creating an instance of embeddingService 
     embeddingService = PointsEmbeddingService(
-        embedder = BGEM3Embedder()
+        embedder = NebiusEmbedder()
     ) 
 
     # 2. Use the factory to create a session

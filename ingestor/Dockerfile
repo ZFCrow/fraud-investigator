@@ -6,9 +6,6 @@ FROM python:3.11-slim AS base
 WORKDIR /app/ingestor
 COPY ./ingestor/requirements.txt .
 
-#! Get the cpu torch version to avoid installing the cuda version which is not compatible with the base image 
-RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
-
 RUN pip install --no-cache-dir -r requirements.txt 
 
 

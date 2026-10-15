@@ -3,6 +3,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from server.chat_agent.Pipeline.workflow.enums import ReasonAction
+from server.chat_agent.tools.enums import ToolErrorType, ToolStatus
 
 # =====================================================================
 # STRUCTURED LLM CALL SHAPES
@@ -49,7 +50,7 @@ class ReasoningDecision(BaseModel):
     # string the model actually returns. Not a bare ToolName either: that would let the model
     # pick tools this step can't route to (the schema tools, the follow-up generator).
     # Converted back to ToolName right after validation.
-    tool_name: Optional[Literal["query_sql", "query_vector_store"]] = Field(
+    tool_name: Optional[Literal["query_sql", "query_vector_store", "search_fraud_patterns"]] = Field(
         default=None, description="Next tool to call. Required if needs_more_data is True."
     )
 
@@ -71,6 +72,14 @@ class ToolObservation(BaseModel):
     tool_name: str
     arguments: dict
     result: str
+    # carried over from the ToolCall: the loop charges, repairs or stops on these
+    status: ToolStatus = ToolStatus.SUCCESS
+    error_type: Optional[ToolErrorType] = None
+
+    @property
+    def label(self) -> str:
+        """Status as shown to the model, e.g. 'success' or 'error (invalid_query)'."""
+        return f"{self.status.value} ({self.error_type.value})" if self.error_type else self.status.value
 
 
 class SQLCallArgs(BaseModel):
@@ -98,6 +107,20 @@ class VectorCallArgs(BaseModel):
     _blank_to_none = field_validator(
         "filter_customer_email", "filter_device_id", "filter_ip_country", "filter_start_date",
         "filter_end_date", "filter_event_count", "filter_declined_payments", mode="before")(_blank_to_none)
+
+
+class WebSearchCallArgs(BaseModel):
+    # first on purpose: the model abstracts the evidence before it writes the query, so the
+    # query is built from the generic pattern rather than from the raw store rows
+    pattern_summary: str = Field(
+        ..., description="The behaviour the store data showed, rewritten generically: what happened, "
+                         "in what order, how fast, how many. No names, emails, ids, IPs, cards or amounts."
+    )
+    query: str = Field(
+        ..., description="5-15 word web search for that pattern, in the words fraud write-ups use, "
+                         "naming the likely scheme if one fits. No store data."
+    )
+    max_results: int = Field(default=5, ge=1, le=8)
 
 
 class FollowUpQuestion(BaseModel):

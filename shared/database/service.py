@@ -8,25 +8,30 @@ import logging
 class Base(DeclarativeBase):
     metadata = MetaData(schema="shop")
 
-def database_url(drivername: str = "postgresql+asyncpg") -> URL:
+def database_url(drivername: str = "postgresql+asyncpg",
+                 username: str = settings.DB_USER,
+                 password: str = settings.DB_PASSWORD) -> URL:
     # URL.create, not an f-string: a password containing @ / : etc. would break the URL
     return URL.create(
         drivername,
-        username=settings.DB_USER,
-        password=settings.DB_PASSWORD,
+        username=username,
+        password=password,
         host=settings.DB_HOST,
         port=settings.DB_PORT,
         database=settings.DB_NAME,
     )
 
 
-async def setup() -> tuple[sessionmaker[AsyncSession], AsyncEngine]:
-    DB_USER = settings.DB_USER
+async def setup(username: str = settings.DB_USER,
+                password: str = settings.DB_PASSWORD) -> tuple[sessionmaker[AsyncSession], AsyncEngine]:
+    """Engine + session factory for one database user: the app user by default, or the
+    read-only role the agent's SQL runs as (settings.DB_READER_USER)."""
+    DB_USER = username
     DB_HOST = settings.DB_HOST
     DB_PORT = settings.DB_PORT
     DB_NAME = settings.DB_NAME
 
-    engine = create_async_engine(database_url(), echo=False)
+    engine = create_async_engine(database_url(username=username, password=password), echo=False)
     AsyncSessionFactory = sessionmaker(
         bind=engine,
         class_=AsyncSession,

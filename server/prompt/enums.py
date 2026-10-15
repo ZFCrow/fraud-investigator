@@ -12,6 +12,7 @@ class PROMPTTYPE(str, Enum):
     WORKFLOW_REASON_STEP = "workflow_reason_step"
     WORKFLOW_SQL_ARGS_STEP = "workflow_sql_args_step"
     WORKFLOW_VECTOR_ARGS_STEP = "workflow_vector_args_step"
+    WORKFLOW_WEB_SEARCH_ARGS_STEP = "workflow_web_search_args_step"
     WORKFLOW_SYNTHESIZE_STEP = "workflow_synthesize_step"
     WORKFLOW_FOLLOW_UP_STEP = "workflow_follow_up_step"
 

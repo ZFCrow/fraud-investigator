@@ -6,12 +6,12 @@ from server.chat_agent.Pipeline.workflow.events import (
     ReadyToAnswerEvent,
     AnsweredEvent,
 )
-from server.chat_agent.Pipeline.workflow.enums import ReasonAction, WorkflowStepName
+from server.chat_agent.Pipeline.workflow.enums import ModelTier, ReasonAction, WorkflowStepName
 from server.prompt.schemas import Prompt
 
 from llama_index.core.workflow import Workflow, StartEvent, StopEvent, Event, step, Context
-from server.chat_agent.tools.enums import ToolName
-from server.chat_agent.schemas import WorkflowStepTrace
+from server.chat_agent.tools.enums import ToolErrorType, ToolName, ToolStatus
+from server.chat_agent.schemas import ToolCall, WorkflowStepTrace
 from llama_index.core.llms import LLM, ChatMessage
 from llama_index.core.prompts import PromptTemplate
 
@@ -20,15 +20,30 @@ from server.chat_agent.Pipeline.workflow.schemas import (
     ToolObservation,
     SQLCallArgs,
     VectorCallArgs,
+    WebSearchCallArgs,
     FinalAnswer,
     FollowUpQuestions
     )
 import logging
+import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TypeVar
+
+from pydantic import BaseModel
 from zoneinfo import ZoneInfo
 
 from server.chat_agent.tools.tool import AgentTool
+
+StructuredOutput = TypeVar("StructuredOutput", bound=BaseModel)
+
+# the tool that reads each routable tool's schema before its arguments are written
+SCHEMA_TOOLS: dict[ToolName, ToolName] = {
+    ToolName.QUERY_SQL: ToolName.GET_SQL_SCHEMA,
+    ToolName.QUERY_SESSION_VECTOR_HYBRID: ToolName.GET_SESSION_VECTOR_HYBRID_SCHEMA,
+    ToolName.SEARCH_FRAUD_PATTERNS: ToolName.GET_FRAUD_PATTERN_SEARCH_SCHEMA,
+}
+# the tools that read this store's data -- a web search needs one of their results first
+STORE_TOOLS: set[str] = {ToolName.QUERY_SQL.value, ToolName.QUERY_SESSION_VECTOR_HYBRID.value}
 # =====================================================================
 # WORKFLOW: reason -> (schema -> execute -> reason)* -> synthesize
 #           -> follow-up, with at most max_iterations tool calls
@@ -44,7 +59,7 @@ def _format_observations(observations: list[ToolObservation]) -> str:
     if not observations:
         return "None yet."
     return "\n\n".join(
-        f"[{i}] {o.tool_name}\nArguments: {o.arguments}\nResult:\n{o.result}"
+        f"[{i}] {o.tool_name} -- {o.label}\nArguments: {o.arguments}\nResult:\n{o.result}"
         for i, o in enumerate(observations, start=1)
     )
 
@@ -52,9 +67,10 @@ def _format_observations(observations: list[ToolObservation]) -> str:
 class ProposedRAGWorkflow(Workflow):
     def __init__(self,
                  tools : dict[ToolName, AgentTool],
-                 llm: LLM,
+                 llms: dict[ModelTier, LLM],
                  step_prompts: dict[WorkflowStepName, Prompt],
                  max_iterations: int = 3,
+                 max_free_repairs: int = 2,
                  timeout: float = 180.0,
                  ):
         # generous timeout: each iteration is 2 sequential LLM calls plus a tool
@@ -63,7 +79,9 @@ class ProposedRAGWorkflow(Workflow):
         super().__init__(timeout=timeout)
 
         self.tools : dict[ToolName, AgentTool] = tools
-        self.llm = llm
+        # one model per tier (server/core/dependencies.py get_llms); each LLM step asks
+        # for a tier, and synthesize_answer's tier depends on the run (see _predict)
+        self.llms : dict[ModelTier, LLM] = llms
         # one versioned Prompt per LLM step (see ProposedWorkflowRag.setup_agent); each
         # step records its prompt's id in WorkflowStepTrace, so the reflector can tell
         # exactly which prompt version produced a bad step
@@ -71,6 +89,32 @@ class ProposedRAGWorkflow(Workflow):
         # cap on tool calls per query; once reached, reason_and_route is forced
         # to emit ReadyToAnswerEvent with whatever it has gathered.
         self.max_iterations = max_iterations
+        # a query the database rejected before running it (ToolErrorType.INVALID_QUERY)
+        # is repaired without using up one of those tool calls -- but only this many
+        # times per question, so a model that keeps writing invalid SQL still stops.
+        self.max_free_repairs = max_free_repairs
+
+    async def _predict(self,
+                       step_name: WorkflowStepName,
+                       output_cls: type[StructuredOutput],
+                       prompt_text: str,
+                       steps: list[WorkflowStepTrace],
+                       tier: Optional[ModelTier] = None,
+                       ) -> StructuredOutput:
+        """One structured LLM call on the step's tier (or `tier`, when the caller picks it per
+        run), recorded in the trace with the model that served it and how long it took."""
+        llm: LLM = self.llms[tier or step_name.llm_tier]
+        started = time.perf_counter()
+        result: StructuredOutput = await llm.astructured_predict(output_cls, PromptTemplate(prompt_text))
+        steps.append(WorkflowStepTrace(
+            step_name=step_name.value,
+            prompt_id=self.step_prompts[step_name].id,
+            input=prompt_text,
+            output=result.model_dump(mode="json"),
+            model=llm.metadata.model_name,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+        ))
+        return result
 
     @step
     async def reason_and_route(self,
@@ -106,7 +150,9 @@ class ProposedRAGWorkflow(Workflow):
 
         def ready(hit_max_iterations: bool,
                   refused: bool = False,
-                  refuse_reason: Optional[str] = None) -> ReadyToAnswerEvent:
+                  refuse_reason: Optional[str] = None,
+                  blocked: bool = False) -> ReadyToAnswerEvent:
+            
             return ReadyToAnswerEvent(
                 chat_request=ev.chat_request,
                 progress=ev.progress,
@@ -116,7 +162,22 @@ class ProposedRAGWorkflow(Workflow):
                 hit_max_iterations=hit_max_iterations,
                 refused=refused,
                 refuse_reason=refuse_reason,
+                blocked=blocked,
             )
+
+        #! blocked -- no LLM call. The database refused the last call because the agent's
+        #! user can only read; no rewrite of the query changes that, so stop and say so.
+        if observations and observations[-1].status == ToolStatus.BLOCKED:
+            logging.info("[ProposedRAGWorkflow] last tool call was blocked by the database, answering")
+            await ev.progress.update("The database refused that as a write. This assistant is read-only...")
+            steps.append(WorkflowStepTrace(
+                step_name=WorkflowStepName.REASON.value,
+                prompt_id=None,  # forced, no LLM call
+                input=observations[-1].result,
+                output={"action": ReasonAction.ANSWER.value, "tool_name": None,
+                        "reasoning": "forced: the last tool call was blocked (read-only database user)"},
+            ))
+            return ready(hit_max_iterations=False, blocked=True)
 
         #! hard cap -- no LLM call, straight to answering with what we have
         if iteration >= self.max_iterations:
@@ -145,19 +206,13 @@ class ProposedRAGWorkflow(Workflow):
             f"Reason about the question and report the facts."
         )
 
-        decision: ReasoningDecision = await self.llm.astructured_predict(
-            ReasoningDecision,
-            PromptTemplate(prompt_text)
+        decision: ReasoningDecision = await self._predict(
+            WorkflowStepName.REASON, ReasoningDecision, prompt_text, steps
         )
         # the next step is derived from the facts the LLM reported, not picked by it;
         # recorded in the trace so the reflector sees which branch actually ran
         action: ReasonAction = decision.action
-        steps.append(WorkflowStepTrace(
-            step_name=WorkflowStepName.REASON.value,
-            prompt_id=self.step_prompts[WorkflowStepName.REASON].id,
-            input=prompt_text,
-            output={**decision.model_dump(mode="json"), "action": action.value},
-        ))
+        steps[-1].output["action"] = action.value
 
         if action == ReasonAction.REFUSE:
             logging.info(f"[ProposedRAGWorkflow] refused: {decision.refuse_reason}")
@@ -174,6 +229,19 @@ class ProposedRAGWorkflow(Workflow):
             tool_name = ToolName.QUERY_SQL
         else:
             tool_name = ToolName(decision.tool_name)
+
+        if tool_name == ToolName.SEARCH_FRAUD_PATTERNS:
+            # Enforced here, not only in the prompt: a web search with no store evidence has
+            # nothing to abstract (and nothing to ground), and a second one rarely adds to the first.
+            # Evidence from an earlier turn counts: "is this a known scam?" is often a follow-up.
+            if any(o.tool_name == ToolName.SEARCH_FRAUD_PATTERNS.value and o.status == ToolStatus.SUCCESS
+                   for o in observations):
+                logging.info("[ProposedRAGWorkflow] web search already done for this question, answering")
+                return ready(hit_max_iterations=False)
+            if not ev.context_str and not any(o.tool_name in STORE_TOOLS and o.status == ToolStatus.SUCCESS
+                                              for o in observations):
+                logging.warning("[ProposedRAGWorkflow] web search routed before any store result, using query_sql first")
+                tool_name = ToolName.QUERY_SQL
         logging.info(f"[ProposedRAGWorkflow] routed to {tool_name.value}: {decision.reasoning}")
         await ev.progress.update(f"Routing to {tool_name.value}...")
 
@@ -196,10 +264,8 @@ class ProposedRAGWorkflow(Workflow):
         steps = await ctx.store.get("steps")
         await progress.update(f"Fetching {ev.tool_name.value} schema...")
 
-        if ev.tool_name == ToolName.QUERY_SQL:
-            schema_text = await self.tools[ToolName.GET_SQL_SCHEMA].__call__()
-        else:
-            schema_text = await self.tools[ToolName.GET_SESSION_VECTOR_HYBRID_SCHEMA].__call__()
+        schema_call: ToolCall = await self.tools[SCHEMA_TOOLS[ev.tool_name]].__call__()
+        schema_text: str = schema_call.output_text
 
         steps.append(WorkflowStepTrace(
             step_name=WorkflowStepName.FETCH_SCHEMA.value,
@@ -241,23 +307,35 @@ class ProposedRAGWorkflow(Workflow):
                 f"Tool calls already made for this question:\n{previous_calls}\n\n"
                 f"Why this call is being made: {ev.reasoning}"
             )
-            args: SQLCallArgs = await self.llm.astructured_predict(
-                SQLCallArgs, PromptTemplate(prompt_text)
+            args: SQLCallArgs = await self._predict(
+                WorkflowStepName.GENERATE_SQL_ARGS, SQLCallArgs, prompt_text, steps
             )
-            steps.append(WorkflowStepTrace(
-                step_name=WorkflowStepName.GENERATE_SQL_ARGS.value,
-                prompt_id=self.step_prompts[WorkflowStepName.GENERATE_SQL_ARGS].id,
-                input=prompt_text,
-                output=args.model_dump(mode="json"),
-            ))
             await progress.update("Executing SQL query...")
-            result = await self.tools[ToolName.QUERY_SQL].__call__(
+            call: ToolCall = await self.tools[ToolName.QUERY_SQL].__call__(
                 sql=args.sql,
                 generate_chart=args.generate_chart,
                 chart_type=args.chart_type,
                 x_column=args.x_column,
                 y_column=args.y_column,
                 value_column=args.value_column,
+            )
+        elif ev.tool_name == ToolName.SEARCH_FRAUD_PATTERNS:
+            await progress.update("Describing the pattern without customer data...")
+            prompt_text = (
+                f"{self.step_prompts[WorkflowStepName.GENERATE_WEB_SEARCH_ARGS].text}\n\n"
+                f"Search guide:\n{ev.schema_text}\n\n"
+                f"Conversation so far:\n{ev.context_str}\n\n"
+                f"Analyst's question: {ev.chat_request.user_input}\n\n"
+                f"Tool calls already made for this question:\n{previous_calls}\n\n"
+                f"Why this call is being made: {ev.reasoning}"
+            )
+            args: WebSearchCallArgs = await self._predict(
+                WorkflowStepName.GENERATE_WEB_SEARCH_ARGS, WebSearchCallArgs, prompt_text, steps
+            )
+            await progress.update(f"Searching the web for known patterns: \"{args.query}\"...")
+            call: ToolCall = await self.tools[ToolName.SEARCH_FRAUD_PATTERNS].__call__(
+                query=args.query,
+                max_results=args.max_results,
             )
         else:
             await progress.update("Building session search query...")
@@ -270,17 +348,11 @@ class ProposedRAGWorkflow(Workflow):
                 f"Tool calls already made for this question:\n{previous_calls}\n\n"
                 f"Why this call is being made: {ev.reasoning}"
             )
-            args: VectorCallArgs = await self.llm.astructured_predict(
-                VectorCallArgs, PromptTemplate(prompt_text)
+            args: VectorCallArgs = await self._predict(
+                WorkflowStepName.GENERATE_VECTOR_ARGS, VectorCallArgs, prompt_text, steps
             )
-            steps.append(WorkflowStepTrace(
-                step_name=WorkflowStepName.GENERATE_VECTOR_ARGS.value,
-                prompt_id=self.step_prompts[WorkflowStepName.GENERATE_VECTOR_ARGS].id,
-                input=prompt_text,
-                output=args.model_dump(mode="json"),
-            ))
             await progress.update("Searching session history...")
-            result = await self.tools[ToolName.QUERY_SESSION_VECTOR_HYBRID].__call__(
+            call: ToolCall = await self.tools[ToolName.QUERY_SESSION_VECTOR_HYBRID].__call__(
                 query=args.query,
                 limit=args.limit,
                 filter_customer_email=args.filter_customer_email,
@@ -292,6 +364,15 @@ class ProposedRAGWorkflow(Workflow):
                 filter_declined_payments=args.filter_declined_payments,
             )
 
+        # An invalid query never ran, so it used none of the question's budget: its repair
+        # is free while free repairs remain. Everything else -- a result, an empty result,
+        # a timeout, a runtime error -- is a call that ran, and counts.
+        repairs_used: int = sum(1 for o in ev.observations if o.error_type == ToolErrorType.INVALID_QUERY)
+        free_repair: bool = (call.error_type == ToolErrorType.INVALID_QUERY
+                             and repairs_used < self.max_free_repairs)
+        if free_repair:
+            await progress.update("The database rejected that query before running it. Repairing it...")
+
         return ToolExecutedEvent(
             chat_request=ev.chat_request,
             progress=ev.progress,
@@ -300,9 +381,11 @@ class ProposedRAGWorkflow(Workflow):
             observations=[*ev.observations, ToolObservation(
                 tool_name=ev.tool_name.value,
                 arguments=args.model_dump(mode="json"),
-                result=str(result),
+                result=call.output_text,
+                status=call.status,
+                error_type=call.error_type,
             )],
-            iteration=ev.iteration + 1,
+            iteration=ev.iteration if free_repair else ev.iteration + 1,
         )
 
     @step
@@ -313,7 +396,15 @@ class ProposedRAGWorkflow(Workflow):
         follow_up_question_generator call it was never meant to make itself."""
         progress = ev.progress
         steps = await ctx.store.get("steps")
-        await progress.update("Synthesizing final answer...")
+        # the one step whose model is chosen per run: see ReadyToAnswerEvent.synthesis_tier
+        tier: ModelTier = ev.synthesis_tier
+        model_name: str = self.llms[tier].metadata.model_name
+        logging.info(f"[ProposedRAGWorkflow] synthesizing on the {tier.value} tier ({model_name})")
+        await progress.update(
+            f"Combining {sum(1 for o in ev.observations if o.status == ToolStatus.SUCCESS)} results into an answer with {model_name}..."
+            if tier == ModelTier.REASONING
+            else f"Writing the answer with {model_name}..."
+        )
 
         limit_note = (
             f"The tool-call limit ({self.max_iterations}) was reached before the reasoning step "
@@ -327,6 +418,14 @@ class ProposedRAGWorkflow(Workflow):
             f"Do not answer it -- reply with the out-of-scope message.\n\n"
             if ev.refused else ""
         )
+        blocked_note = (
+            "The last tool call was BLOCKED by the database: this assistant's database user can "
+            "only read the store's tables (customers, sessions, events, orders, payments, "
+            "refunds, products, promo codes). Nothing was changed. Tell the analyst this "
+            "assistant is read-only and cannot do that, then give what the earlier results "
+            "(if any) show.\n\n"
+            if ev.blocked else ""
+        )
         prompt_text = (
             f"{self.step_prompts[WorkflowStepName.SYNTHESIZE_ANSWER].text}\n\n"
             f"Conversation so far:\n{ev.context_str}\n\n"
@@ -334,18 +433,12 @@ class ProposedRAGWorkflow(Workflow):
             f"Tool calls made:\n{_format_observations(ev.observations)}\n\n"
             f"{limit_note}"
             f"{refusal_note}"
+            f"{blocked_note}"
             f"Write the final response to the analyst."
         )
-        final: FinalAnswer = await self.llm.astructured_predict(
-            FinalAnswer, PromptTemplate(prompt_text)
+        final: FinalAnswer = await self._predict(
+            WorkflowStepName.SYNTHESIZE_ANSWER, FinalAnswer, prompt_text, steps, tier=tier
         )
-
-        steps.append(WorkflowStepTrace(
-            step_name=WorkflowStepName.SYNTHESIZE_ANSWER.value,
-            prompt_id=self.step_prompts[WorkflowStepName.SYNTHESIZE_ANSWER].id,
-            input=prompt_text,
-            output=final.model_dump(mode="json"),
-        ))
 
         return AnsweredEvent(chat_request=ev.chat_request, progress=ev.progress, answer=final.answer)
 
@@ -365,18 +458,12 @@ class ProposedRAGWorkflow(Workflow):
             f"Generate 2-3 follow-up questions."
         )
         try:
-            follow_up: FollowUpQuestions = await self.llm.astructured_predict(
-                FollowUpQuestions, PromptTemplate(prompt_text)
+            # _predict records the step as soon as the LLM call itself succeeds, before
+            # the tool call below -- so a failure in the tool invocation doesn't erase
+            # the record that this step's generation did complete.
+            follow_up: FollowUpQuestions = await self._predict(
+                WorkflowStepName.GENERATE_FOLLOW_UP, FollowUpQuestions, prompt_text, steps
             )
-            # logged as soon as the LLM call itself succeeds, before the tool call
-            # below -- so a failure in the tool invocation doesn't erase the record
-            # that this step's generation did complete.
-            steps.append(WorkflowStepTrace(
-                step_name=WorkflowStepName.GENERATE_FOLLOW_UP.value,
-                prompt_id=self.step_prompts[WorkflowStepName.GENERATE_FOLLOW_UP].id,
-                input=prompt_text,
-                output=follow_up.model_dump(mode="json"),
-            ))
             await self.tools[ToolName.FOLLOW_UP_QUESTION_GENERATOR].__call__(
                 generated_questions=[q.model_dump() for q in follow_up.generated_questions]
             )

@@ -1,5 +1,5 @@
 from shared.database.service import setup
-from shared.embeddings.BGEM3Embedder import BGEM3Embedder
+from shared.embeddings.NebiusEmbedder import NebiusEmbedder
 from shared.embeddings.EmbeddingService import EmbeddingService
 
 from server.chat_agent import router
@@ -41,6 +41,11 @@ async def lifespan(app: FastAPI):
     # 2. Store it in app.state so the rest of the app can see it
     app.state.db_factory = AsyncSessionFactory
 
+    # a second connection pool, as the read-only role: the only one the agent's SQL tool
+    # is ever given (get_store_repo), so the database itself refuses a write
+    ReaderSessionFactory, reader_engine = await setup(settings.DB_READER_USER, settings.DB_READER_PASSWORD)
+    app.state.reader_db_factory = ReaderSessionFactory
+
     # One-time bootstrap: seed a default active prompt for any PROMPTTYPE that
     # doesn't have one yet (empty/fresh DB). Runs exactly once here, before the
     # app accepts any traffic
@@ -59,7 +64,7 @@ async def lifespan(app: FastAPI):
     app.state.qdrant = qdrant_client
 
     app.state.embedding_service = EmbeddingService(
-        embedder = BGEM3Embedder()
+        embedder = NebiusEmbedder()
     )
 
     # redis client
@@ -76,6 +81,7 @@ async def lifespan(app: FastAPI):
     # 3. Shutdown
     await app.state.redis.aclose()
     await engine.dispose()
+    await reader_engine.dispose()
      
 # 2. Initialize the FastAPI application
 app = FastAPI(

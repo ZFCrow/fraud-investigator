@@ -41,6 +41,9 @@ from shared.embeddings.EmbeddingService import EmbeddingService
 
 from server.chat_agent.tools.SQLQuery.repository import IStoreQueryRepository
 from server.chat_agent.tools.SQLQuery.retrieval_tool import SQLQueryTool
+from server.chat_agent.tools.WebSearch.repository import IWebSearchRepository
+from server.chat_agent.tools.WebSearch.retrieval_tool import FraudPatternSearchTool
+from server.chat_agent.tools.WebSearch.schema_tool import FraudPatternSearchSchemaTool
 from server.chat_agent.tools.SQLQuery.schema_tool import SQLSchemaTool
 
 from server.chat_agent.tools.VectorRetrieval.retrieval_tool import SessionRetrievalTool
@@ -55,7 +58,7 @@ from server.evaluation.service import EvaluationService
 from server.core.stream.progressReporter import ProgressReporter
 
 from server.chat_agent.Pipeline.workflow.workflow import ProposedRAGWorkflow
-from server.chat_agent.Pipeline.workflow.enums import WorkflowStepName, PROMPTED_STEPS
+from server.chat_agent.Pipeline.workflow.enums import ModelTier, WorkflowStepName, PROMPTED_STEPS
 from typing import Optional 
 
 # =====================================================================
@@ -71,7 +74,8 @@ class ProposedWorkflowRag(BaseRAGPipeline):
                  chat_repo: IChatRepository,
                  cache_repo: ICacheRepository,
                  prompt_repo: IPromptRepository,
-                 llm: LLM,
+                 web_search_repo: IWebSearchRepository,
+                 llms: dict[ModelTier, LLM],
                  evaluation_service: EvaluationService,
                  ):
 
@@ -83,7 +87,8 @@ class ProposedWorkflowRag(BaseRAGPipeline):
         self.chat_repo = chat_repo
         self.cache_repo = cache_repo
         self.prompt_repo = prompt_repo
-        self.llm = llm
+        self.web_search_repo = web_search_repo
+        self.llms = llms
         self.evaluation_service = evaluation_service
 
         self.tools_called: list[ToolCall] = []
@@ -101,7 +106,8 @@ class ProposedWorkflowRag(BaseRAGPipeline):
                      chat_repo: IChatRepository,
                      cache_repo: ICacheRepository,
                      prompt_repo: IPromptRepository,
-                     llm: LLM,
+                     web_search_repo: IWebSearchRepository,
+                     llms: dict[ModelTier, LLM],
                      evaluation_service: EvaluationService = EvaluationService(),
                      ) -> "ProposedWorkflowRag":
 
@@ -112,7 +118,8 @@ class ProposedWorkflowRag(BaseRAGPipeline):
             chat_repo=chat_repo,
             cache_repo=cache_repo,
             prompt_repo=prompt_repo,
-            llm=llm,
+            web_search_repo=web_search_repo,
+            llms=llms,
             evaluation_service=evaluation_service,
         )
         await agent._init_pipeline()
@@ -131,6 +138,9 @@ class ProposedWorkflowRag(BaseRAGPipeline):
                                       charts_to_send=self.charts_to_send)
         sql_schema_tool = SQLSchemaTool(self.tools_called)
 
+        fraud_pattern_search_tool = FraudPatternSearchTool(self.web_search_repo, self.tools_called)
+        fraud_pattern_search_schema_tool = FraudPatternSearchSchemaTool(self.tools_called)
+
         follow_up_tool = FollowUpTool(tools_called=self.tools_called,
                                       follow_up_questions=self.follow_up_questions)
         #? =================================================================
@@ -140,6 +150,9 @@ class ProposedWorkflowRag(BaseRAGPipeline):
 
         self.tools[ToolName.GET_SESSION_VECTOR_HYBRID_SCHEMA] = session_vector_store_schema_tool
         self.tools[ToolName.GET_SQL_SCHEMA] = sql_schema_tool
+
+        self.tools[ToolName.SEARCH_FRAUD_PATTERNS] = fraud_pattern_search_tool
+        self.tools[ToolName.GET_FRAUD_PATTERN_SEARCH_SCHEMA] = fraud_pattern_search_schema_tool
 
         self.tools[ToolName.FOLLOW_UP_QUESTION_GENERATOR] = follow_up_tool
 
@@ -175,7 +188,7 @@ class ProposedWorkflowRag(BaseRAGPipeline):
 
         self.pipeline = ProposedRAGWorkflow(
             tools = self.tools,
-            llm=self.llm,
+            llms=self.llms,
             step_prompts=step_prompts,
         )
 

@@ -5,14 +5,12 @@ from server.chat_agent.tools.enums import ToolName
 from server.chat_agent.tools.SQLQuery.repository import IStoreQueryRepository
 
 import logging
-import re
 from decimal import Decimal
 import pandas as pd
 import plotly.express as px
 from typing import Optional
 
 class SQLQueryTool(AgentTool):
-    ALLOWED = ("select", "with")
     def __init__(
             self,
             repo: IStoreQueryRepository,
@@ -32,37 +30,8 @@ class SQLQueryTool(AgentTool):
                        y_column: Optional[str] = None,  # ← agent specifies
                        value_column: Optional[str] = None    # ← heatmap cell value
     ):
-        cleaned = sql.strip().lower()
-
-        # single statement only
-        if ";" in cleaned[:-1]:
-            raise ValueError(
-                "Multiple SQL statements are not allowed"
-            )
-
-        # read-only
-        if not cleaned.startswith(self.ALLOWED):
-            raise ValueError(
-                "Only SELECT queries are allowed"
-            )
-
-        # block dangerous keywords
-        forbidden = [
-            "insert",
-            "update",
-            "delete",
-            "drop",
-            "alter",
-            "truncate",
-            "create"
-        ]
-
-        # whole words only: a column such as created_at must not trip the check
-        if re.search(r"(" + "|".join(forbidden) + r")", cleaned):
-            raise ValueError(
-                f"Mutation queries are forbidden: the statement contains one of {forbidden} as a keyword"
-            )
-
+        # no checks on the SQL text here: the repository runs it as a database user that
+        # can only read the store tables, so a write is refused by Postgres itself
         results = await self.repo.execute_sql(sql)
 
         if generate_chart and results and self.charts_to_send is not None:

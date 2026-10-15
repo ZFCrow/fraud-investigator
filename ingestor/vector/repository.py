@@ -12,6 +12,7 @@ import logging
 from typing import Optional
 
 from shared.vector.qdrant_mixin import QdrantVersionedMixin 
+from shared.settings import settings
 
 
 class IVectorIngestionRepository(IVersionedCollectionRepository):
@@ -169,10 +170,10 @@ class QdrantRepository(QdrantVersionedMixin,
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config={
-                    "text-dense":VectorParams(size=1024, distance=Distance.COSINE)
+                    "text-dense":VectorParams(size=settings.EMBEDDING_DIM, distance=Distance.COSINE)
                     },
                 sparse_vectors_config={
-                    "text-sparse":SparseVectorParams()
+                    "text-sparse":SparseVectorParams(modifier=models.Modifier.IDF)  # BM25 vectors carry TF only
                     }
 
             )
@@ -328,10 +329,10 @@ class QdrantRepository(QdrantVersionedMixin,
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config={
-                    "text-dense":VectorParams(size=1024, distance=Distance.COSINE)
+                    "text-dense":VectorParams(size=settings.EMBEDDING_DIM, distance=Distance.COSINE)
                     },
                 sparse_vectors_config={
-                    "text-sparse":SparseVectorParams()
+                    "text-sparse":SparseVectorParams(modifier=models.Modifier.IDF)  # BM25 vectors carry TF only
                     }
 
             )

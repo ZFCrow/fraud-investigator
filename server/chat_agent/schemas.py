@@ -8,7 +8,7 @@ import json
 
 from llama_index.core.llms import ChatMessage
 
-from server.chat_agent.tools.enums import ToolName
+from server.chat_agent.tools.enums import ToolErrorType, ToolName, ToolStatus
 # =====================================================================
 # CORE STRUCTS (The building blocks)
 # =====================================================================
@@ -26,6 +26,22 @@ class ToolCall(BaseModel):
     #schema returns str    
     #opcode mapper can return either an int or a str
     output: list[str] | list[dict] | str | int
+
+    # defaults keep traces stored before these fields existed loadable
+    status: ToolStatus = Field(default=ToolStatus.SUCCESS, description="How the call ended.")
+    error_type: Optional[ToolErrorType] = Field(default=None, description="Set when status is error.")
+
+    @property
+    def output_text(self) -> str:
+        """The output as the model reads it."""
+        if isinstance(self.output, list):
+            if not self.output:
+                return "No results found."
+            return "\n\n---\n\n".join(
+                item if isinstance(item, str) else json.dumps(item, default=str)
+                for item in self.output
+            )
+        return str(self.output)
 
     # this is when i am taking it from the db
     #! input_Args would comes as a string , so 
@@ -62,7 +78,10 @@ class WorkflowStepTrace(BaseModel):
     input: str = Field(..., description="What was fed into this step's LLM call (or tool call, for schema-fetch).")
     #!output: str = Field(..., description="This step's result, serialized.")
     #! so i dont need to deserialize it and dbeaver and show it mroe clearly! 
-    output: Any = Field(..., description="This step's result, serialized. Can be a string, list, or dict depending on the step.") 
+    output: Any = Field(..., description="This step's result, serialized. Can be a string, list, or dict depending on the step.")
+    # both None for a step that makes no LLM call (fetch_schema, a forced answer)
+    model: Optional[str] = Field(default=None, description="Model id that served this step's LLM call.")
+    latency_ms: Optional[int] = Field(default=None, description="Wall time of this step's LLM call, retries included.")
 
 
 

@@ -7,11 +7,14 @@ from typing import Callable, AsyncGenerator
 import redis.asyncio as aioredis
 import logging
 
+from server.chat_agent.Pipeline.workflow.enums import ModelTier
 from server.chat_agent.repository.repository import IChatRepository
 from server.chat_agent.repository.postgres_repository import PostGresChatRepository
 from server.chat_agent.tools.SQLQuery.postgres_session_repository import PostgresStoreQueryRepository 
 from server.chat_agent.tools.SQLQuery.repository import IStoreQueryRepository
 
+from server.chat_agent.tools.WebSearch.repository import IWebSearchRepository
+from server.chat_agent.tools.WebSearch.tavily_repository import TavilyWebSearchRepository
 from server.prompt.postgres_repository import PostgresPromptRepository
 from server.prompt.repository import IPromptRepository
 from shared.settings import settings
@@ -33,6 +36,10 @@ from server.evaluation.repository import IEvaluationRepository, PostgresEvaluati
 
 def get_db_factory(request: Request) -> Callable:
     return request.app.state.db_factory
+
+def get_reader_db_factory(request: Request) -> Callable:
+    """Sessions connected as the read-only role -- for the agent's own SQL only."""
+    return request.app.state.reader_db_factory
 
 #!! ======================================
 #! VECTOR STORES 
@@ -70,9 +77,12 @@ async def get_embedding_service(request: Request) -> EmbeddingService:
 #!! ======================================
 
 async def get_store_repo(
-    db_factory: Callable = Depends(get_db_factory)
+    db_factory: Callable = Depends(get_reader_db_factory)
 ) -> AsyncGenerator[IStoreQueryRepository, None]:
     """
+    The repo behind the agent's SQL tool. It gets the read-only role's sessions, never the
+    app user's: what the model writes is run by a user that can only SELECT the store tables.
+
     Factory pattern for the store-data query repo, returning the implementation
     based on the current environment. Same db_factory-gated generator shape as
     get_chat_repo/get_evaluation_repo — every environment currently lands in the
@@ -126,6 +136,13 @@ async def get_prompt_repo(
 
 
 #!! ======================================
+#! WEB SEARCH 
+#!! ======================================
+async def get_web_search_repo() -> IWebSearchRepository:
+    return TavilyWebSearchRepository(api_key=settings.TAVILY_API_KEY, base_url=settings.TAVILY_BASE_URL)
+
+
+#!! ======================================
 #! Cache 
 #!! ======================================
 
@@ -155,9 +172,9 @@ async def get_cache_repo(request: Request) -> ICacheRepository:
 async def get_evaluator() -> IEvaluator: 
     match settings.ENVIRONMENT:
         case "DEVELOPMENT" | "TESTING":
-            # the judge runs on the cheaper fast model; falls back to the agent model
-            # when MODEL_FAST is not set
-            judge_model = settings.MODEL_FAST or settings.MODEL_AGENT
+            # its own setting, not MODEL_FAST: the judge returns a nested result that the
+            # smaller models did not produce reliably. Falls back to the agent model.
+            judge_model = settings.MODEL_JUDGE or settings.MODEL_AGENT
             logging.info(f"Using LLMEvaluator ({judge_model}) for environment: {settings.ENVIRONMENT}")
             return LLMEvaluator(llm=get_nebius_llm(judge_model))
         case _:
@@ -205,7 +222,7 @@ def get_nebius_llm(model: str) -> LLM:
     if not settings.NEBIUS_API_KEY or not model:
         raise HTTPException(
             status_code=500,
-            detail="NEBIUS_API_KEY and a model id (MODEL_AGENT / MODEL_FAST) must be set to use Nebius"
+            detail="NEBIUS_API_KEY and MODEL_AGENT must be set to use Nebius"
         )
     return OpenAILike(
         model=model,
@@ -219,18 +236,17 @@ def get_nebius_llm(model: str) -> LLM:
     )
 
 
-def get_llm() -> LLM:
-    """The agent's model: MODEL_AGENT on Nebius Token Factory."""
-    from llama_index.core.llms.function_calling import FunctionCallingLLM
-    llm = get_nebius_llm(settings.MODEL_AGENT)
-
-    logging.info(f"LLM type: {type(llm)}")
-    logging.info(f"LLM MRO: {type(llm).__mro__}")
-    logging.info(f"LLM metadata: {llm.metadata}")
-    logging.info(
-        f"Is FunctionCallingLLM: {isinstance(llm, FunctionCallingLLM)}"
-    )
-
-    return llm
+def get_llms() -> dict[ModelTier, LLM]:
+    """
+    The workflow's models, one per tier, all on Nebius Token Factory. A tier whose model
+    id is not set runs on MODEL_AGENT, so the app works with only that one configured.
+    """
+    model_ids: dict[ModelTier, str] = {
+        ModelTier.FAST: settings.MODEL_FAST or settings.MODEL_AGENT,
+        ModelTier.AGENT: settings.MODEL_AGENT,
+        ModelTier.REASONING: settings.MODEL_REASONING or settings.MODEL_AGENT,
+    }
+    logging.info(f"Workflow models: { {tier.value: model for tier, model in model_ids.items()} }")
+    return {tier: get_nebius_llm(model) for tier, model in model_ids.items()}
 #!! ==================================== 
 #!! ====================================    

@@ -7,6 +7,52 @@ app, an ingestor that groups log rows into sessions and loads them into Qdrant, 
 search tools, and an LLM judge, all running on an OpenAI model. The entries below are the
 work done for the hackathon.
 
+## 2026-10-16
+
+- **Embeddings moved to Token Factory.** Session and query embeddings come from
+  `Qwen/Qwen3-Embedding-8B` on Token Factory's OpenAI-compatible `/v1/embeddings`, at 1024
+  dimensions (`NebiusEmbedder` in `shared/embeddings/`, `EMBEDDING_MODEL` / `EMBEDDING_DIM`).
+  Queries carry Qwen3's retrieval instruction; documents are embedded as-is. The local BGE-M3
+  model, FlagEmbedding and PyTorch were removed from the server and ingestor images.
+- **Sparse half of hybrid search is now BM25.** Token Factory returns dense vectors only, so
+  the sparse vectors come from fastembed's `Qdrant/bm25` (tokenizer + stemmer, no weights).
+  The collection's `text-sparse` vector is created with Qdrant's IDF modifier, since BM25
+  vectors carry term frequency only. Existing collections must be re-ingested.
+- **Known fraud patterns from the web (Tavily).** New `search_fraud_patterns` tool
+  (`server/chat_agent/tools/WebSearch/`). After a SQL or session-search result shows
+  suspicious behaviour, a new `generate_web_search_args` step rewrites it as a generic pattern
+  and a search query; Tavily returns public write-ups, and the answer adds a "Known pattern"
+  section with source links, kept separate from the store evidence. Guards in code: the query
+  is rejected before sending if it contains an email, IP, device, card, address or session id;
+  the tool can't be the first call of a conversation; and it runs at most once per question.
+
+## 2026-10-10
+
+- **Model routing across Nemotron tiers.** The workflow takes one model per tier (fast, agent,
+  reasoning) instead of a single model, and every LLM step calls the tier it is assigned
+  (`get_llms` in `server/core/dependencies.py`). The final answer's tier is chosen per
+  question from what the reasoning loop needed: two or more successful tool results go to the
+  reasoning tier (`MODEL_REASONING`), a single-result lookup stays on the agent tier, and a
+  refusal goes to the fast tier. No classifier call is added. Unset tiers fall back to
+  `MODEL_AGENT`.
+- **Per-step telemetry.** Each LLM step in the trace records the model that served it and its
+  latency.
+- **The judge has its own setting.** `MODEL_JUDGE` replaces the judge's use of `MODEL_FAST`,
+  which now means the workflow's fast tier.
+- **Read-only is enforced by the database, not by a keyword filter.** The SQL tool's text
+  checks (SELECT-only prefix, forbidden keywords) were removed. The agent's SQL now runs as
+  a separate Postgres user, `shop_reader`, with SELECT on the nine store tables only,
+  read-only sessions and a 15 s statement timeout (`db_init/03_create_users.sh`, migration
+  `b2d4f6a8c0e1`, `get_store_repo` in `server/core/dependencies.py`).
+- **Every tool call carries a status.** `ToolCall` records `success`, `blocked` or `error`,
+  and for an error its type (`invalid_query`, `timeout`, `runtime`), read from the Postgres
+  SQLSTATE code in `PostgresStoreQueryRepository`. The tool wrapper returns the `ToolCall`
+  to the workflow instead of a string.
+- **The tool budget only counts calls that ran.** A query rejected before running
+  (`invalid_query`) is repaired without using up one of the three tool calls, up to twice
+  per question. A `blocked` call ends the loop and the answer says the assistant is
+  read-only. The reason and SQL prompts were updated to the new tags.
+
 ## 2026-10-08
 
 - **Nebius Token Factory as the LLM provider.** The chat agent loads its model through

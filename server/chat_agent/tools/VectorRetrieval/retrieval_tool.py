@@ -53,7 +53,7 @@ class SessionRetrievalTool(VectorRetrievalTool):
                 ) -> list[str]:
 
         # embed internally, agent just passes the query string
-        dense, sparse = self.embedding_service.embedConvertedText([query])
+        dense, sparse = self.embedding_service.embedConvertedText([query], is_query=True)
         dense = dense[0]
         sparse = sparse[0] 
         

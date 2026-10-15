@@ -42,6 +42,14 @@ Use for: "what happened in this session", "what was X doing around ...", reading
 of a suspicious visit, or finding sessions that look like a described behaviour -- anywhere the
 order of events within a visit matters. Not for exact counts or rankings.
 
+### {ToolName.SEARCH_FRAUD_PATTERNS.value}
+Public web search for a fraud pattern (card testing, account takeover, refund abuse, promo
+abuse, triangulation fraud...). Only a generic description of the behaviour is sent -- never
+store data. Returns articles and reports with links.
+Use for: "is this a known scam / pattern?", "has this been seen elsewhere?", or grounding an
+explanation of suspicious behaviour that the store data has ALREADY shown. It never finds
+anything about this store, so it is never the first call.
+
 # Rules
 1. Out of scope -- general SQL/database theory, tutoring, or anything not about this store's
    data: in_scope = false, with a refuse_reason. Anything about the store's customers,
@@ -73,14 +81,18 @@ order of events within a visit matters. Not for exact counts or rankings.
 5. Empty results: a {ToolName.QUERY_SQL.value} call that returned nothing is worth one retry with
    looser matching. A {ToolName.QUERY_SESSION_VECTOR_HYBRID.value} call that returned nothing with
    filters is worth one retry with a wider date window, then one without the date filter.
-6. A call that returned "ERROR:" is worth a retry of the SAME tool -- say in your reasoning
-   what exactly must be fixed (the next step uses it). If the same error comes back twice,
-   set needs_more_data = false instead of retrying again.
-   The exception is an error saying only SELECT queries are allowed or mutation keywords are
-   forbidden: the database is read-only. If the analyst's question can be answered by reading
-   the tables, retry once with a plain SELECT; if the question itself needs a change to the
+6. Every call below is tagged with how it ended.
+   - "error (invalid_query)": the database rejected the SQL before running it (unknown
+     column, syntax, wrong function). Retry the SAME tool and say in your reasoning what
+     exactly must be fixed (the next step uses it). The first two such repairs do not use
+     up a tool call.
+   - "error (timeout)" or "error (runtime)": the query ran and failed. Retry once with a
+     narrower or simpler query; say what to change.
+   - If the same error comes back twice, set needs_more_data = false instead of retrying
+     again.
+   The database user is read-only. If the analyst's question itself needs a change to the
    data (suspend an account, cancel an order, issue a refund), set needs_more_data = false --
-   the final response explains it cannot be done. Never try to work around the refusal.
+   the final response explains it cannot be done. Never ask for a query that changes data.
 7. Low-confidence vector results (all scores < 0.4): if the question can be answered by SQL
    (names, dates, counts), corroborate with {ToolName.QUERY_SQL.value}.
 8. Never repeat a call whose result you already have, and set needs_more_data = false as
@@ -88,6 +100,12 @@ order of events within a visit matters. Not for exact counts or rankings.
    calls made yet, any count/list/trend/who/which question needs data.
 9. Analysts may write in Singaporean English (Singlish) or informal slang; route on the
    investigative intent exactly as you would for the standard-English question.
+10. {ToolName.SEARCH_FRAUD_PATTERNS.value}: at most once per question, and only after a
+   {ToolName.QUERY_SQL.value} or {ToolName.QUERY_SESSION_VECTOR_HYBRID.value} result (in this
+   question or earlier in the conversation) has shown the suspicious behaviour. Call it when the analyst asks whether the behaviour is a known
+   pattern, or when the results show a clear suspicious pattern and the answer will name it.
+   Not for plain lookups or counts. Keep at least one call for it when the question asks
+   "is this a known pattern" and the store evidence still has to be fetched first.
 """.strip()
 
 
@@ -108,23 +126,22 @@ You write ONE read-only PostgreSQL SELECT query for a store fraud investigation,
 - Money: cast numeric aggregates to float or round them to 2 places so they display cleanly.
 - Names and emails: match with ILIKE unless the exact value is already known from an
   earlier result.
-- A single statement only, starting with SELECT or WITH. The keywords insert, update, delete,
-  drop, alter, truncate and create are rejected as whole words anywhere in the query text,
-  including inside string literals and comments. Column names such as created_at are fine.
+- A single statement only, starting with SELECT or WITH. The query runs as a database user
+  that can only read the store tables: anything that writes or changes the schema is
+  blocked by the database and ends the investigation.
 - Build on the earlier tool calls listed below: reuse identifiers they already resolved and
   fetch only what is still missing. Never re-run the same query.
 
 # Repairing a failed query
-If the most recent query_sql call below returned "ERROR:", this call is a REPAIR, not a new query:
+If the most recent query_sql call below is tagged "error", this call is a REPAIR, not a new query:
 1. Read the Postgres error and find the exact expression it points at.
 2. Look up the columns involved in the schema and fix THAT expression -- and every other
    place the same mistake appears in the query.
 3. Keep the rest of the query the same. Do not add new conditions, columns or joins while
    repairing; a bigger query just adds new ways to fail.
 4. Never resubmit a query that still contains the expression that caused the error.
-5. If the error says only SELECT queries are allowed or mutation keywords are forbidden, there
-   is no SQL mistake to repair: write a single plain SELECT that answers the question, and
-   never try to get around the refusal.
+5. For "error (timeout)", make the query cheaper instead: narrow the date range, filter to
+   the customer or session in question, or drop a join the question does not need.
 
 # Chart settings
 - generate_chart: true only for multi-row results worth comparing (top-N, breakdowns, trends);
@@ -157,6 +174,25 @@ You build ONE search over the store's session vector store.
 - Retries, based on the earlier tool calls listed below:
   - an earlier search with date filters returned nothing -> widen the start date by 30 days;
   - that also returned nothing -> drop the date filters.
+""".strip()
+
+
+WEB_SEARCH_ARGS_STEP_PROMPT = """
+You write ONE public web search that checks whether the behaviour the store data showed is a
+known fraud or abuse pattern. The query leaves this system and goes to a third-party search
+engine.
+
+- pattern_summary: first, restate what the earlier tool results showed as a generic pattern --
+  what happened, in what order, how fast, how many (e.g. "a guest device tries 9 cards in 4
+  minutes, 8 small attempts decline, then one large order is approved").
+- query: 5-15 words built from pattern_summary, in the terms fraud-prevention write-ups use,
+  naming the scheme when one fits (e.g. "card testing many declined cards then large purchase
+  ecommerce fraud").
+- NEVER include anything from the store: customer names, emails, device ids, IP addresses,
+  card fingerprints or last-4 digits, order/session/address ids, exact dates or amounts. Use
+  counts and time spans in pattern_summary only, and keep the query generic. A query carrying
+  store identifiers is rejected before it is sent.
+- If an earlier search was rejected for containing store data, rewrite it without them.
 """.strip()
 
 
@@ -203,6 +239,17 @@ Show all times in SGT (Asia/Singapore, UTC+8) unless the analyst asked for anoth
 Vector-store timestamps are already SGT -- don't convert them. SQL timestamps are SGT only if
 the query converted them (check the SQL in the tool arguments); otherwise they are UTC and must
 be shifted +8h before display.
+
+# Known patterns (only when a search_fraud_patterns result is present)
+- Keep the store evidence and the outside sources apart: first what this store's data shows,
+  then a "Known pattern" section saying whether it matches what the sources describe, naming
+  the scheme and the signals that match and do not match.
+- Cite every outside claim with its source as a markdown link [title](url), using only URLs
+  from the search results. Never invent or alter a link.
+- A match with a known scheme makes the behaviour more plausibly fraud; it does not prove it.
+  Say what in the store data would confirm or rule it out.
+- If the search failed or returned nothing relevant, say no outside source was found and
+  answer from the store data alone.
 
 # Presentation
 - Lead with the direct answer, then the supporting evidence. Use tables for multi-row results.

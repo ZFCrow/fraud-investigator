@@ -7,19 +7,21 @@ from server.chat_agent.repository.repository import IChatRepository
 from server.core.stream.progressReporter import ProgressReporter 
 from server.core.stream.stream_events import StreamEvent 
 from server.core.dependencies import (
-    get_cache_repo, get_embedding_service, get_evaluation_service, get_llm, get_vector_repo, get_store_repo , 
-    get_chat_repo, get_redis_repo, get_prompt_repo
+    get_cache_repo, get_embedding_service, get_evaluation_service, get_llms, get_vector_repo, get_store_repo , 
+    get_chat_repo, get_redis_repo, get_prompt_repo, get_web_search_repo
     )
 
 from server.core.rate_limit import enforce_rate_limit
 from server.evaluation.service import EvaluationService
 from server.chat_agent.Pipeline.BaseRAGPipeline import BaseRAGPipeline
 from server.chat_agent.Pipeline.workflow.pipeline import ProposedWorkflowRag
+from server.chat_agent.Pipeline.workflow.enums import ModelTier
 from server.chat_agent.schemas import AgentTraceResponse, ChatRequest
 
 
 from server.chat_agent.tools.SQLQuery.repository import IStoreQueryRepository
 from server.prompt.repository import IPromptRepository
+from server.chat_agent.tools.WebSearch.repository import IWebSearchRepository
 from server.vector.repository import IVectorQueryRepository
 from shared.embeddings.EmbeddingService import EmbeddingService
 from shared.cache.ICacheRepository import ICacheRepository
@@ -48,20 +50,22 @@ async def chat_stream(
     chat_repository : IChatRepository = Depends(get_chat_repo),
     cache_repository : ICacheRepository = Depends(get_redis_repo),
     prompt_repo : IPromptRepository = Depends(get_prompt_repo), 
+    web_search_repo : IWebSearchRepository = Depends(get_web_search_repo),
     evaluation_service : EvaluationService  = Depends(get_evaluation_service)  
 ):
     #
     # Same setup as before
     try:
-        llm : LLM = get_llm()
-        agent : BaseRAGPipeline = await ProposedWorkflowRag.create(
+        llms : dict[ModelTier, LLM] = get_llms()
+        agent: BaseRAGPipeline = await ProposedWorkflowRag.create(
             embedding_service=embedding_service,
             vector_repo=vector_repo,
             store_repo=store_repo,
             chat_repo=chat_repository,
             cache_repo=cache_repository,
             prompt_repo=prompt_repo,
-            llm=llm,
+            web_search_repo=web_search_repo,
+            llms=llms,
             evaluation_service=evaluation_service
         )
     except NotImplementedError as nie: 

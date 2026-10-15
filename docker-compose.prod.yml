@@ -76,7 +76,7 @@ services:
             dockerfile: ./ingestor/Dockerfile
             target: prod
         volumes:
-            # BGE-M3 weights, downloaded on first start and shared with the server
+            # fastembed BM25 tokenizer/stopword files, downloaded on first start and shared with the server
             - model_cache:/app/shared/model_cache
             - ingest_state:/state
         depends_on:

@@ -2,10 +2,11 @@ from typing import Optional
 
 from llama_index.core.workflow import StartEvent, Event
 from server.chat_agent.schemas import ChatRequest
-from server.chat_agent.tools.enums import ToolName
+from server.chat_agent.tools.enums import ToolName, ToolStatus
 from server.core.stream.progressReporter import ProgressReporter
 from llama_index.core.llms import ChatMessage
 from server.chat_agent.Pipeline.workflow.schemas import ToolObservation
+from server.chat_agent.Pipeline.workflow.enums import ModelTier
 
 # =====================================================================
 # WORKFLOW EVENTS
@@ -88,6 +89,24 @@ class ReadyToAnswerEvent(Event):
     # then writes a refusal instead of an answer
     refused: bool = False
     refuse_reason: Optional[str] = None
+    # set when the database refused a tool call on permissions (the agent's user can only
+    # read): the loop stops there and synthesize_answer says the change cannot be made
+    blocked: bool = False
+
+    @property
+    def synthesis_tier(self) -> ModelTier:
+        """
+        The model tier that writes the answer, decided from what the reasoning loop
+        actually needed rather than guessed from the question's wording: an answer that
+        has to combine two or more results is an investigation and goes to the reasoning
+        model; one result (or none) is a lookup and stays on the agent model. A failed
+        call does not count -- a simple question whose SQL needed one repair is still a
+        lookup. A refusal or a blocked call has nothing to weigh, only a reply to write.
+        """
+        if self.refused or self.blocked:
+            return ModelTier.FAST
+        results: int = sum(1 for o in self.observations if o.status == ToolStatus.SUCCESS)
+        return ModelTier.REASONING if results >= 2 else ModelTier.AGENT
 
 
 class AnsweredEvent(Event):
