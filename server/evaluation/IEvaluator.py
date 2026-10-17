@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Optional
 from llama_index.core.llms import ChatMessage
 from server.chat_agent.schemas import AgentTrace
 
@@ -11,8 +10,7 @@ class IEvaluator(ABC):
         self,
         og_user_input: str,
         trace: AgentTrace,
-        chat_history: list[ChatMessage],
-        expected_answer: Optional[str] = None,
+        chat_history: list[ChatMessage]
     ) -> EvaluationResult:
 
         """

@@ -63,16 +63,3 @@ class EvaluationResult(BaseModel):
 
     # specifically for validations - NOT MAPPED to the database, just for the purpose of validation
     reflected: SkipJsonSchema[Optional[bool]] = Field(default=False, description="Whether the evaluation was reflected upon (for validation).")
-
-class TestEvaluationResult(EvaluationResult):
-    # benchmark-only — answer_correct requires a reference answer to compare against,
-    # which only ever exists on benchmark runs. Kept off the base EvaluationResult (and
-    # off the live `evaluation` SQL table entirely) rather than a column that's null on
-    # ~90% of rows; TestEvaluator/FileEvaluationRepository are the only things that
-    # populate or persist this. Not folded into overall_result — that stays a pure
-    # response-quality read so it's comparable between live and benchmark rows.
-    answer_correct: Optional[bool] = Field(default=None, description="Whether the answer is correct or not.")
-    answer_correctness_reasoning: Optional[str] = Field(default=None, description="Reasoning for the answer correctness assessment.")
-
-
- 

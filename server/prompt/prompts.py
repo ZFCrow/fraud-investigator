@@ -144,8 +144,6 @@ GROUP 3 - Tool Routing:
   Give an integer estimate.
   
   If scope_gate = out_of_scope, expected_tool_calls = 0.
-  
-{group4}
 
 Note: overall_result should be the arithmetic mean of the six metric scores (helpfulness, coherence, coverage, faithfulness, context_relevance, answer_relevance). overall_reasoning should briefly show that mean calculation.
 """

@@ -9,7 +9,7 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (Best Apps and Agents trac
 
 License: [MIT](LICENSE)
 
-- Demo: _TBD_
+- Demo: <http://zfcrow.online/ui/>
 - Video: _TBD_
 
 ## What it does
@@ -71,7 +71,7 @@ tiers. The tiers are settings; any tier left empty runs on `MODEL_AGENT`
 | Call | Where | Tier (setting) | How |
 |---|---|---|---|
 | Reason / route | `server/chat_agent/Pipeline/workflow/workflow.py` (`reason_and_route`) | agent (`MODEL_AGENT`) | Structured output (`ReasoningDecision`) |
-| SQL and search arguments | same file (`execute_tool`) | agent (`MODEL_AGENT`) | Structured output (`SQLCallArgs`, `VectorCallArgs`) |
+| SQL and search arguments | same file (`execute_tool`) | agent (`MODEL_AGENT`) | Structured output (`SQLCallArgs`, `VectorCallArgs`, `WebSearchCallArgs`) |
 | Final answer | same file (`synthesize_answer`) | chosen per question, see below | Structured output (`FinalAnswer`) |
 | Follow-up questions | same file (`generate_follow_up`) | fast (`MODEL_FAST`) | Structured output (`FollowUpQuestions`) |
 | Evaluation judge | `server/evaluation/LLMEvaluator.py` | `MODEL_JUDGE` | Structured output (`EvaluationResult`) |
@@ -133,6 +133,46 @@ The judge therefore runs on Super (`MODEL_JUDGE` can point it at another model).
   so the server and ingestor images no longer ship PyTorch or download model weights. The
   sparse half is BM25 (fastembed `Qdrant/bm25`, no model weights), with Qdrant applying IDF.
 
+## How Tavily is used
+
+Store data can show *what* happened; it cannot say whether that behaviour is a scheme fraud
+teams already know. The `search_fraud_patterns` tool (`server/chat_agent/tools/WebSearch/`)
+answers that from public sources with one Tavily `/search` call, so an answer can say "this
+matches card testing" and link the write-ups it rests on.
+
+How a call happens:
+
+1. **Store evidence first.** The reasoning step may route to the tool only after a SQL or
+   session-search result (in this question or earlier in the conversation) has shown the
+   behaviour. This is enforced in `reason_and_route`, not only in the prompt: a web search
+   routed before any store result is turned into a SQL call, and a second search in the same
+   question goes straight to the answer.
+2. **The evidence is abstracted before the query is written.** The `generate_web_search_args`
+   step returns `WebSearchCallArgs`: first `pattern_summary`, the behaviour rewritten
+   generically (what happened, in what order, how fast, how many), then `query`, 5-15 words
+   built from that summary in the terms fraud write-ups use. Only `query` is sent;
+   `pattern_summary` exists so the query is written from the pattern rather than from raw rows.
+3. **Store identifiers are blocked in code.** Before anything leaves the system,
+   `FraudPatternSearchTool` checks the query against patterns for emails, IP addresses,
+   device ids, card fingerprints, address ids and session ids. A match is rejected unsent as
+   an invalid query, and the workflow asks for a rewrite, the same way it repairs bad SQL.
+   Names can't be caught by a pattern, so the prompt forbids them and the check is the backstop.
+4. **One request.** `TavilyWebSearchRepository` posts to `https://api.tavily.com/search`
+   (`search_depth: basic`, up to 8 results, default 5) over plain HTTP; each result keeps its
+   title, URL, extract and relevance score, with the URL verbatim so it can be cited.
+5. **Sources stay apart from evidence.** The answer gives what this store's data shows first,
+   then a "Known pattern" section: whether the behaviour matches the scheme the sources
+   describe, which signals match and which do not, each outside claim cited as a markdown link
+   using only URLs from the results. A match makes fraud more plausible; it is not proof, and
+   the answer says what in the store data would confirm or rule it out.
+
+`TAVILY_API_KEY` in `.env` is optional. Without it the tool returns an error and the agent
+answers from store data alone.
+
+Example, on the 2-core / 4 GB deployment: "Which device tried the most different cards, and
+does it look like card testing? Is this a known fraud pattern?" ran SQL, then one Tavily
+search, and answered with a Known pattern section and sources in 42 s.
+
 ## Other Nebius services
 
 None yet. Token Factory is the only Nebius service this project uses today.
@@ -145,7 +185,7 @@ Requirements: Docker with Compose, and a Nebius Token Factory API key.
 
    ```
    cp .env.db.example .env.db    # then set POSTGRES_PASSWORD
-   cp .env.example .env          # then set NEBIUS_API_KEY
+   cp .env.example .env          # then set NEBIUS_API_KEY (and TAVILY_API_KEY for web search)
    ```
 
    `.env.db` is the Postgres superuser for the container. `.env` is the app's configuration;
