@@ -1,5 +1,7 @@
 
 import logging
+from datetime import datetime
+from typing import Optional
 
 from server.core.stream.progressReporter import ProgressReporter
 from server.evaluation.repository import IEvaluationRepository
@@ -42,6 +44,7 @@ class EvaluationService:
         og_user_input : str,
         trace : AgentTrace,
         chat_history : list[ChatMessage],
+        data_as_of : Optional[datetime] = None,
         progress : ProgressReporter = ProgressReporter()
         ) -> EvaluationResult:
 
@@ -51,6 +54,7 @@ class EvaluationService:
         :param og_user_input: The original user input.
         :param trace: The agent trace containing the query and answer.
         :param chat_history: The conversation history.
+        :param data_as_of: When the store's data ends -- the "now" the agent answered from.
         :return: A dictionary containing evaluation results.
         """
 
@@ -76,7 +80,8 @@ class EvaluationService:
             og_user_input=og_user_input,
             trace=trace,
             prompt=eval_prompt,
-            chat_history=chat_history
+            chat_history=chat_history,
+            data_as_of=data_as_of,
         )
         #! ===============================================================
         #! ===============================================================

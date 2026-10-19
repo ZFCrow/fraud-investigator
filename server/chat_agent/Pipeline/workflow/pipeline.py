@@ -24,6 +24,7 @@ its tool directly with LLM-generated, schema-validated arguments.
 
 import asyncio
 import logging
+from datetime import datetime
 
 
 from llama_index.core.llms import LLM, ChatMessage
@@ -238,12 +239,18 @@ class ProposedWorkflowRag(BaseRAGPipeline):
 
         await progress.update("Analyzing input...")
 
+        # every question is answered as of the end of the store's data, not the real clock
+        # (read per query, so a reseed is picked up without a restart). The judge gets the
+        # same time below.
+        data_as_of: Optional[datetime] = await self.store_repo.get_data_as_of()
+
         response = "System Error: Response generation failed or was cancelled."
         handler = self.pipeline.run(
             chat_request=chat_request,
             progress=progress,
             chat_history=chat_hist,
             context_str=context_str,
+            data_as_of=data_as_of,
         )
         try:
             response = await handler
@@ -291,6 +298,9 @@ class ProposedWorkflowRag(BaseRAGPipeline):
             #! ============================================================
             await progress.update("saving conversation...")
             await self.chat_repo.insert_trace(trace=agent_trace)
+            # the tools that actually ran, for the UI's trace panel -- sent before the judge
+            # starts, so it shows even when the evaluation fails
+            await progress.metaData(agent_trace, "AGENT TRACE SENT")
             #! ============================================================
 
             #! ============================================================
@@ -301,6 +311,7 @@ class ProposedWorkflowRag(BaseRAGPipeline):
                     og_user_input=chat_request.user_input,
                     trace=agent_trace,
                     chat_history=chat_hist,
+                    data_as_of=data_as_of,
                     progress=progress
                 )
             )

@@ -43,6 +43,9 @@ the customer's own history. The agent does that work and shows its reasoning.
 - **Evidence, not verdicts.** The prompts require every number to come from a SQL result,
   every answer to say what the evidence is consistent with and what it was compared against,
   and to end with a Reasoning/Trace section (tools called, the SQL or filters used).
+- **Answered as of the end of the data.** The store is a fixed snapshot, so "today" and
+  "last 7 days" count back from its latest activity, not the real clock. Every answer opens
+  with the moment it was treated as asked at, and the judge scores against the same time.
 - **Read-only, enforced by the database.** The SQL the model writes runs as a separate
   Postgres user (`shop_reader`) that can only SELECT the nine store tables, in read-only
   sessions with a 15 s statement timeout. There is no keyword filter on the SQL text: a

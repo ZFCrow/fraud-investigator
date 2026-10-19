@@ -7,6 +7,16 @@ app, an ingestor that groups log rows into sessions and loads them into Qdrant, 
 search tools, and an LLM judge, all running on an OpenAI model. The entries below are the
 work done for the hackathon.
 
+## 2026-10-20
+
+- **Questions are answered as of the end of the store data.** The synthetic store is a fixed
+  snapshot, so "today" and "last 7 days" measured from the real clock fell past its end and
+  every such question came back as "no activity". The pipeline now reads the latest session
+  activity (`IStoreQueryRepository.get_data_as_of`) per question and gives that time to the
+  reasoning, argument-writing and answer steps as "now". Every answer opens with a line saying
+  which moment it was treated as asked at, and the judge is told the same time so it scores
+  relative periods against it.
+
 ## 2026-10-16
 
 - **Embeddings moved to Token Factory.** Session and query embeddings come from

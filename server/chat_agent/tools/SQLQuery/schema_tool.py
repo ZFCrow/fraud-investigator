@@ -95,6 +95,22 @@ Relationships:
 - sessions -> customers (N:1 via customer_id, nullable); join customers to get the email
 - events, payment_attempts, orders -> sessions (N:1 via session_id)
 - order_items -> orders, products; refunds -> orders
+- payment_attempts -> orders (N:1 via order_id, NULL for a declined attempt with no order)
+- A session can have many orders, many payment attempts and many events (a card-testing
+  session has dozens of attempts). An order has at most one payment attempt.
+
+Joins that multiply rows (fan-out):
+- Joining two of a session's child tables on session_id alone -- e.g. orders AND
+  payment_attempts both ON ... session_id = s.id -- pairs every order with every attempt in
+  that session: 8 orders x 46 attempts = 368 rows, so COUNT and SUM come out multiplied.
+  The same happens with events, order_items or refunds joined beside another child table.
+- To link a payment to its order, join ON pa.order_id = o.id, not on session_id.
+- To report several measures together (orders, attempts, declines, events...), count or sum
+  each table in its own CTE or subquery, then combine the one-row results:
+  WITH o  AS (SELECT count(*) AS orders FROM shop.orders WHERE ...),
+       pa AS (SELECT count(*) AS attempts FROM shop.payment_attempts WHERE ...)
+  SELECT * FROM o, pa
+  COUNT(DISTINCT ...) does not fix a fan-out SUM.
 
 Important semantics:
 - Nothing is pre-flagged. There is no "suspicious", "fraud" or "is_new_device" column: every

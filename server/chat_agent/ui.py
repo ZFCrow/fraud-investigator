@@ -2,6 +2,7 @@
 from datetime import datetime
 
 import httpx
+import json
 
 import chainlit as cl
 
@@ -95,6 +96,58 @@ def client_id() -> str:
     return forwarded or environ.get("REMOTE_ADDR") or str(cl.user_session.get("session_id"))
 
 
+# tool calls left out of the clickable chain: schema reads return the same text every time,
+# and the follow-up questions are already shown as buttons
+_UNCHAINED_TOOLS = {"get_sql_schema", "get_vector_store_schema", "get_fraud_pattern_search_schema",
+                    "follow_up_question_generator"}
+STEPS_PANEL = "Models & timing"
+_MAX_ROWS = 20
+
+
+def _output_markdown(output) -> str:
+    """A tool's output, trimmed for the side panel: SQL rows as a table, search hits as text."""
+    if isinstance(output, list) and output and isinstance(output[0], dict):
+        cols = list(output[0].keys())
+        rows = "\n".join("| " + " | ".join(str(r.get(c, "")) for c in cols) + " |" for r in output[:_MAX_ROWS])
+        table = f"| {' | '.join(cols)} |\n|{'---|' * len(cols)}\n{rows}"
+        more = f"\n\n…and {len(output) - _MAX_ROWS} more row(s)." if len(output) > _MAX_ROWS else ""
+        return f"{len(output)} row(s)\n\n{table}{more}"
+    if isinstance(output, list):
+        hits = "\n\n---\n\n".join(str(o)[:1500] for o in output[:5])
+        more = f"\n\n…and {len(output) - 5} more." if len(output) > 5 else ""
+        return f"{len(output)} result(s)\n\n{hits}{more}" if output else "No results."
+    return str(output)[:3000]
+
+
+def tool_panels(trace: dict) -> list[tuple[str, str]]:
+    """One (name, markdown) side panel per tool call the agent actually ran, read from its
+    trace -- not the answer's own Reasoning/Trace section, which the model writes and can
+    misstate. Names are numbered, since the same tool can run twice (e.g. a repaired query)."""
+    panels: list[tuple[str, str]] = []
+    for tc in trace.get("tool_calls") or []:
+        if tc["tool_name"] in _UNCHAINED_TOOLS:
+            continue
+        status = tc["status"] + (f" ({tc['error_type']})" if tc.get("error_type") else "")
+        args: dict = tc["input_args"]
+        tool_input = (f"```sql\n{args['sql']}\n```" if "sql" in args
+                      else f"```json\n{json.dumps(args, indent=2)}\n```")
+        name = f"{len(panels) + 1}. {tc['tool_name']}"
+        panels.append((name, f"# {name}\n\nStatus: **{status}**\n\n## Input\n\n{tool_input}\n\n"
+                             f"## Output\n\n{_output_markdown(tc['output'])}"))
+    return panels
+
+
+def steps_panel(trace: dict) -> str:
+    """Which model served each workflow step and how long its LLM call took."""
+    rows = "\n".join(
+        f"| {s['step_name']} | {s.get('model') or '—'} | "
+        + (f"{s['latency_ms'] / 1000:.1f}" if s.get("latency_ms") is not None else "—")
+        + " |"
+        for s in trace.get("steps") or []
+    )
+    return f"# {STEPS_PANEL}\n\n| Step | Model | LLM time (s) |\n|---|---|---|\n{rows}"
+
+
 async def send_stream_request(chat_request, msg):
 
     async with httpx.AsyncClient(timeout=300.0) as client:
@@ -145,8 +198,22 @@ async def send_stream_request(chat_request, msg):
                     
                     case "metadata":
                         logging.info(f"msg.id={msg.id}, existing elements={[e.name for e in msg.elements]}")
-                        # the evaluation of this answer, sent once the judge is done
                         data = dict(event.data)
+
+                        # two payloads share this event: the agent's trace, sent with the answer
+                        # (it has tool_calls), and the judge's evaluation, sent once the judge is done
+                        if "tool_calls" in data:
+                            panels = tool_panels(data)
+                            for name, content in panels + [(STEPS_PANEL, steps_panel(data))]:
+                                msg.elements.append(cl.Text(name=name, content=content, display="side"))
+                            # Chainlit turns an element's name in the message text into a link
+                            # that opens its side panel
+                            chain = " → ".join(name for name, _ in panels) or "no tools called"
+                            msg.content += f"\n\n---\n**Tools:** {chain} · {STEPS_PANEL}"
+                            await msg.update()
+                            continue
+
+                        # the evaluation of this answer
                         sections = [f"# Query \n\n ## User Input: {chat_request.user_input}", "## Evaluation Results"]
 
                         rows = "\n".join(

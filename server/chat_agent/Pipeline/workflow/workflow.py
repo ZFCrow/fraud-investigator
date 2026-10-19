@@ -50,9 +50,28 @@ STORE_TOOLS: set[str] = {ToolName.QUERY_SQL.value, ToolName.QUERY_SESSION_VECTOR
 # =====================================================================
 
 
-def _now_sgt() -> str:
-    # arg generation needs "now" to turn "last 7 days" / "today" into concrete dates
-    return datetime.now(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d %H:%M (%A), SGT")
+SGT = ZoneInfo("Asia/Singapore")
+
+
+def _as_of_note(data_as_of: Optional[datetime]) -> str:
+    """The "now" the steps work from, to turn "last 7 days" / "today" into concrete dates.
+    The store data is a fixed snapshot ending at data_as_of: the real clock would put those
+    windows past the end of the data, and every answer would be "no activity"."""
+    if data_as_of is None:
+        return f"Current time: {datetime.now(SGT):%Y-%m-%d %H:%M (%A)}, SGT"
+    return (
+        f"Current time: {data_as_of.astimezone(SGT):%Y-%m-%d %H:%M (%A)}, SGT. The store's data is "
+        f"a fixed snapshot that ends at this moment, so treat the question as asked then: \"now\", "
+        f"\"today\", \"recent\" and \"last N days\" are relative to this time, not the real date."
+    )
+
+
+def _as_of_disclaimer(data_as_of: datetime) -> str:
+    """Opens every answer, so the analyst knows which "today" the answer counted from."""
+    return (
+        f"_Treated as asked on {data_as_of.astimezone(SGT):%d %b %Y, %H:%M} SGT: the store data is "
+        f"a fixed snapshot that ends then, so \"today\" and \"last N days\" count back from that time._\n\n"
+    )
 
 
 def _format_observations(observations: list[ToolObservation]) -> str:
@@ -133,7 +152,8 @@ class ProposedRAGWorkflow(Workflow):
             # `progress`, an arbitrary class Pydantic just passes through by
             # reference) -- confirmed directly, appends made after that point never
             # reached whatever list the outer pipeline originally passed in. `steps`
-            # is the only thing ever put into ctx.store; `progress` is threaded
+            # and the plain `data_as_of` datetime are the only things ever put into
+            # ctx.store; `progress` is threaded
             # through event fields instead because ctx.store.set() deep-copies the
             # whole accumulated state on every call, which breaks the instant
             # anything non-deepcopyable, like progress's live asyncio.Queue, is
@@ -141,12 +161,14 @@ class ProposedRAGWorkflow(Workflow):
             # retrieves the real accumulated list back out via handler.ctx.store
             # after the run completes, rather than relying on shared object identity.
             await ctx.store.set("steps", [])
+            await ctx.store.set("data_as_of", ev.data_as_of)
             observations: list[ToolObservation] = []
             iteration = 0
         else:
             observations = ev.observations
             iteration = ev.iteration
         steps = await ctx.store.get("steps")
+        data_as_of: Optional[datetime] = await ctx.store.get("data_as_of")
 
         def ready(hit_max_iterations: bool,
                   refused: bool = False,
@@ -199,6 +221,7 @@ class ProposedRAGWorkflow(Workflow):
 
         prompt_text = (
             f"{self.step_prompts[WorkflowStepName.REASON].text}\n\n"
+            f"{_as_of_note(data_as_of)}\n\n"
             f"Conversation so far:\n{ev.context_str}\n\n"
             f"Analyst's question: {ev.chat_request.user_input}\n\n"
             f"Tool calls made so far ({iteration}/{self.max_iterations}):\n"
@@ -294,6 +317,7 @@ class ProposedRAGWorkflow(Workflow):
         (or correct) them instead of repeating them."""
         progress = ev.progress
         steps = await ctx.store.get("steps")
+        data_as_of: Optional[datetime] = await ctx.store.get("data_as_of")
         previous_calls = _format_observations(ev.observations)
 
         if ev.tool_name == ToolName.QUERY_SQL:
@@ -301,7 +325,7 @@ class ProposedRAGWorkflow(Workflow):
             prompt_text = (
                 f"{self.step_prompts[WorkflowStepName.GENERATE_SQL_ARGS].text}\n\n"
                 f"Schema:\n{ev.schema_text}\n\n"
-                f"Current time: {_now_sgt()}\n\n"
+                f"{_as_of_note(data_as_of)}\n\n"
                 f"Conversation so far:\n{ev.context_str}\n\n"
                 f"Analyst's question: {ev.chat_request.user_input}\n\n"
                 f"Tool calls already made for this question:\n{previous_calls}\n\n"
@@ -342,7 +366,7 @@ class ProposedRAGWorkflow(Workflow):
             prompt_text = (
                 f"{self.step_prompts[WorkflowStepName.GENERATE_VECTOR_ARGS].text}\n\n"
                 f"Schema:\n{ev.schema_text}\n\n"
-                f"Current time: {_now_sgt()}\n\n"
+                f"{_as_of_note(data_as_of)}\n\n"
                 f"Conversation so far:\n{ev.context_str}\n\n"
                 f"Analyst's question: {ev.chat_request.user_input}\n\n"
                 f"Tool calls already made for this question:\n{previous_calls}\n\n"
@@ -396,6 +420,7 @@ class ProposedRAGWorkflow(Workflow):
         follow_up_question_generator call it was never meant to make itself."""
         progress = ev.progress
         steps = await ctx.store.get("steps")
+        data_as_of: Optional[datetime] = await ctx.store.get("data_as_of")
         # the one step whose model is chosen per run: see ReadyToAnswerEvent.synthesis_tier
         tier: ModelTier = ev.synthesis_tier
         model_name: str = self.llms[tier].metadata.model_name
@@ -428,6 +453,9 @@ class ProposedRAGWorkflow(Workflow):
         )
         prompt_text = (
             f"{self.step_prompts[WorkflowStepName.SYNTHESIZE_ANSWER].text}\n\n"
+            f"{_as_of_note(data_as_of)} Name the absolute dates any relative period resolved to. "
+            f"The answer already opens with a line saying it was treated as asked at that time -- "
+            f"do not repeat it.\n\n"
             f"Conversation so far:\n{ev.context_str}\n\n"
             f"Analyst's question: {ev.chat_request.user_input}\n\n"
             f"Tool calls made:\n{_format_observations(ev.observations)}\n\n"
@@ -440,7 +468,14 @@ class ProposedRAGWorkflow(Workflow):
             WorkflowStepName.SYNTHESIZE_ANSWER, FinalAnswer, prompt_text, steps, tier=tier
         )
 
-        return AnsweredEvent(chat_request=ev.chat_request, progress=ev.progress, answer=final.answer)
+        # added in code, not left to the model, so every answer carries it; a refusal has no
+        # data behind it to date
+        answer: str = (
+            _as_of_disclaimer(data_as_of) + final.answer
+            if data_as_of is not None and not ev.refused
+            else final.answer
+        )
+        return AnsweredEvent(chat_request=ev.chat_request, progress=ev.progress, answer=answer)
 
     @step
     async def generate_follow_up(self, ev: AnsweredEvent, ctx: Context) -> StopEvent:

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 
 from llama_index.core.workflow import StartEvent, Event
@@ -36,6 +37,10 @@ class QueryStartEvent(StartEvent):
     # session's history from Redis/Postgres twice per query.
     chat_history: list[ChatMessage]
     context_str: str
+    # when the store's data ends (IStoreQueryRepository.get_data_as_of): the data is a fixed
+    # snapshot, so every question is answered as if asked at that moment. None = empty
+    # store, the real clock is used instead.
+    data_as_of: Optional[datetime]
 
 
 # `observations` (every tool call made so far this query) and `iteration` (tool

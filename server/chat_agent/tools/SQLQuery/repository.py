@@ -1,7 +1,18 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
+from typing import Optional
 
 
-class IStoreQueryRepository(ABC): 
+class IStoreQueryRepository(ABC):
+
+    @abstractmethod
+    async def get_data_as_of(self) -> Optional[datetime]:
+        """
+        When the store's data ends: the latest session activity, or None when the store is
+        empty. The data is a fixed snapshot, so this -- not the real clock -- is "now" for
+        every question.
+        """
+        ...
 
     @abstractmethod
     def execute_sql(self, sql: str):

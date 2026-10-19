@@ -4,6 +4,7 @@ from typing import Optional
 from server.core.stream.stream_events import StreamEvent 
 import logging
 from server.evaluation.schemas import EvaluationResult
+from server.chat_agent.schemas import AgentTrace
 
 class ProgressReporter:
     def __init__(
@@ -52,7 +53,9 @@ class ProgressReporter:
                 ) 
     async def metaData(
          self , 
-         metaData : EvaluationResult,
+         # the agent's trace (sent with the answer) or the judge's evaluation (sent once
+         # the judge is done); the UI tells them apart by the trace's tool_calls key
+         metaData : AgentTrace | EvaluationResult,
          log : Optional[str] = None 
          ):
         if self.queue:

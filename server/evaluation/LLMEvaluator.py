@@ -1,7 +1,8 @@
 from datetime import datetime, timezone 
 import logging
 
-from typing import Optional 
+from typing import Optional
+from zoneinfo import ZoneInfo
 
 
 from llama_index.core.llms import LLM, ChatMessage
@@ -27,6 +28,7 @@ class LLMEvaluator(IEvaluator):
         trace: AgentTrace,
         prompt : Prompt,  
         chat_history: list[ChatMessage],
+        data_as_of: Optional[datetime] = None,
     ) -> EvaluationResult:
 
         history_str = "\n".join(
@@ -40,7 +42,19 @@ class LLMEvaluator(IEvaluator):
 
 
         # 2. Wrap your string in a PromptTemplate (remove the {json_schema} part from your EVALUATOR_PROMPT string)
-        prompt_tmpl = PromptTemplate(prompt.text)
+        # The agent answers as of the end of the store's data (workflow._as_of_note). Appended
+        # in code rather than written into the versioned prompt, so it reaches judge prompts
+        # already seeded in the database; without it the judge measures "last 7 days" against
+        # the real date and marks correct answers wrong.
+        as_of_note: str = (
+            f"\n\nThe store's data is a fixed snapshot that ends "
+            f"{data_as_of.astimezone(ZoneInfo('Asia/Singapore')):%Y-%m-%d %H:%M} SGT, and the agent "
+            f"treats every question as asked at that moment. Judge relative periods (\"today\", "
+            f"\"recent\", \"last 7 days\") against that time, not the real date, and do not count "
+            f"the snapshot's age as stale data. The response's opening line saying so is expected."
+            if data_as_of is not None else ""
+        )
+        prompt_tmpl = PromptTemplate(prompt.text + as_of_note)
 
         try:
             # 3. Call astructured_predict.

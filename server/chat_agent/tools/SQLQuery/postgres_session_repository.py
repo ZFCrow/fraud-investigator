@@ -2,7 +2,8 @@
 from sqlalchemy import  text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 import logging
 from server.chat_agent.tools.SQLQuery.repository import IStoreQueryRepository
 from server.chat_agent.tools.enums import ToolErrorType, ToolStatus
@@ -21,6 +22,11 @@ class PostgresStoreQueryRepository(IStoreQueryRepository):
                  session: AsyncSession):
         self.tz = timezone(timedelta(hours=8))
         self.session = session
+
+    async def get_data_as_of(self) -> Optional[datetime]:
+        return await self.session.scalar(
+            text("SELECT max(coalesce(ended_at, started_at)) FROM shop.sessions")
+        )
 
     #! this is for the agent to pass in a select query
     async def execute_sql(self, sql: str):
