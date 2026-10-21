@@ -201,6 +201,37 @@ WHERE e.event_type IN ('LOGIN_FAILED', 'LOGIN_SUCCESS')
 GROUP BY s.ip_address, s.device_id
 HAVING COUNT(DISTINCT e.customer_id) >= 5
 ORDER BY accounts_targeted DESC;
+
+Store-wide activity per day -- "anything unusual?" with no customer named. One CTE per table (no
+fan-out), 14 days so the earlier week is the baseline for the recent one. Replace <as of> with the
+timestamp literal given as the current time:
+WITH days AS (
+  SELECT d::date AS day
+  FROM generate_series((TIMESTAMPTZ '<as of>' AT TIME ZONE 'Asia/Singapore')::date - 13,
+                       (TIMESTAMPTZ '<as of>' AT TIME ZONE 'Asia/Singapore')::date,
+                       interval '1 day') d
+),
+s  AS (SELECT (started_at AT TIME ZONE 'Asia/Singapore')::date AS day, COUNT(*) AS sessions
+       FROM shop.sessions GROUP BY 1),
+fl AS (SELECT (event_time AT TIME ZONE 'Asia/Singapore')::date AS day, COUNT(*) AS failed_logins
+       FROM shop.events WHERE event_type = 'LOGIN_FAILED' GROUP BY 1),
+o  AS (SELECT (placed_at AT TIME ZONE 'Asia/Singapore')::date AS day, COUNT(*) AS orders,
+              ROUND(SUM(total_amount)::numeric, 2) AS sales
+       FROM shop.orders GROUP BY 1),
+pa AS (SELECT (attempted_at AT TIME ZONE 'Asia/Singapore')::date AS day, COUNT(*) AS payment_attempts,
+              COUNT(*) FILTER (WHERE result = 'declined') AS declined
+       FROM shop.payment_attempts GROUP BY 1),
+r  AS (SELECT (requested_at AT TIME ZONE 'Asia/Singapore')::date AS day, COUNT(*) AS refunds
+       FROM shop.refunds GROUP BY 1)
+SELECT days.day,
+       COALESCE(s.sessions, 0) AS sessions, COALESCE(fl.failed_logins, 0) AS failed_logins,
+       COALESCE(o.orders, 0) AS orders, COALESCE(o.sales, 0) AS sales,
+       COALESCE(pa.payment_attempts, 0) AS payment_attempts, COALESCE(pa.declined, 0) AS declined,
+       COALESCE(r.refunds, 0) AS refunds
+FROM days
+LEFT JOIN s USING (day) LEFT JOIN fl USING (day) LEFT JOIN o USING (day)
+LEFT JOIN pa USING (day) LEFT JOIN r USING (day)
+ORDER BY days.day;
 """
 
 class SQLSchemaTool(AgentTool):

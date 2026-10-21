@@ -80,3 +80,6 @@ llama-server/models
 
 # deployment
 deploy-test/
+# Demo video and slide deck: kept out of the public repo
+video/
+slides/

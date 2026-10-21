@@ -4,11 +4,27 @@ from server.chat_agent.tools.enums import ToolName
 
 from server.chat_agent.tools.SQLQuery.repository import IStoreQueryRepository
 
+from server.chat_agent.tools.enums import ToolErrorType
+from server.chat_agent.tools.exceptions import ToolError
+
 import logging
+import re
 from decimal import Decimal
 import pandas as pd
 import plotly.express as px
 from typing import Optional
+
+# Postgres's ways of reading the real clock
+_REAL_CLOCK = re.compile(
+    r"\b(now|clock_timestamp|statement_timestamp|transaction_timestamp)\s*\("
+    r"|\b(current_timestamp|current_date|current_time|localtimestamp|localtime)\b",
+    re.IGNORECASE,
+)
+
+
+def _sgt_date(as_of: str) -> str:
+    return f"TIMESTAMPTZ '{as_of}' AT TIME ZONE 'Asia/Singapore'"
+
 
 class SQLQueryTool(AgentTool):
     def __init__(
@@ -28,10 +44,22 @@ class SQLQueryTool(AgentTool):
                        chart_type: str = "bar",
                        x_column: Optional[str] = None,  # ← agent specifies
                        y_column: Optional[str] = None,  # ← agent specifies
-                       value_column: Optional[str] = None    # ← heatmap cell value
+                       value_column: Optional[str] = None,    # ← heatmap cell value
+                       # the store data's end as a timestamptz literal, e.g. "2026-10-07 09:19:52+08";
+                       # set by the workflow, never by the model
+                       as_of: Optional[str] = None,
     ):
-        # no checks on the SQL text here: the repository runs it as a database user that
-        # can only read the store tables, so a write is refused by Postgres itself
+        # no permission checks on the SQL text here: the repository runs it as a database user
+        # that can only read the store tables, so a write is refused by Postgres itself.
+        # The one text check is the clock: the data is a snapshot, so the database's own
+        # "now" puts every relative window past the end of the data.
+        if as_of and _REAL_CLOCK.search(sql):
+            raise ToolError(
+                f"The query uses the database clock (now(), current_timestamp, current_date...), "
+                f"which returns today's real date, after the store data ends. Replace it with the "
+                f"literal TIMESTAMPTZ '{as_of}' (or ({_sgt_date(as_of)})::date for the SGT date).",
+                error_type=ToolErrorType.INVALID_QUERY,
+            )
         results = await self.repo.execute_sql(sql)
 
         if generate_chart and results and self.charts_to_send is not None:

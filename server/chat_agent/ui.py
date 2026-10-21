@@ -80,13 +80,12 @@ async def on_summarize(action: cl.Action):
     logging.info(f"follow up action triggered with payload: {action.payload}")
     # Here you can implement the logic to handle the summarize trend action
   
-    # 1. Create a "fake" message object
-    # You don't need to 'await msg.send()' here because your 
-    # 'main' function handles the sending of the message.
-    fake_message = cl.Message(content=action.payload.get("value", ""))
-    
-    # 2. Call main directly
-    await main(fake_message)
+    # Sent as the user's own message, so the chat shows the full question that was asked
+    # (the button only carries its short label); main() then answers it like a typed one.
+    question = cl.Message(content=action.payload.get("value", ""), type="user_message")
+    await question.send()
+
+    await main(question)
 
 def client_id() -> str:
     """Who is asking, for the API's rate limit: the browser's IP (as forwarded by the

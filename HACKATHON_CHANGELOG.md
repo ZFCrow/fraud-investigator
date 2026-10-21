@@ -7,6 +7,23 @@ app, an ingestor that groups log rows into sessions and loads them into Qdrant, 
 search tools, and an LLM judge, all running on an OpenAI model. The entries below are the
 work done for the hackathon.
 
+## 2026-10-21
+
+- **SQL can't read the real clock.** The model still wrote `current_timestamp` / `now()` by
+  habit, which put "last 7 days" past the end of the data. The SQL step is now given the data's
+  end as a `TIMESTAMPTZ` literal, and `SQLQueryTool` rejects a query that reads the database
+  clock as an invalid query, so the free-repair loop rewrites it with the literal.
+- **No fan-out joins.** The SQL schema text now explains that joining two of a session's child
+  tables on `session_id` multiplies rows (8 orders x 46 payment attempts = 368), and that several
+  measures are counted in one CTE per table.
+- **Store-wide overview pattern.** "Anything unusual?" had no example query and the model's own
+  attempts were hit and miss. A 14-day per-day activity query (one CTE per table) is now one of
+  the schema's investigation patterns; on the synthetic data it surfaces the credential
+  stuffing, the account takeover and the card testing in one call.
+- **Tool calls in the UI.** Each answer ends with the tool chain; each call opens a side panel
+  with its real SQL or search input and its output, and a "Models & timing" panel shows which
+  Nemotron model served each step.
+
 ## 2026-10-20
 
 - **Questions are answered as of the end of the store data.** The synthetic store is a fixed

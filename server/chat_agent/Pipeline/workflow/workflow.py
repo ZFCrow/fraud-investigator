@@ -66,6 +66,23 @@ def _as_of_note(data_as_of: Optional[datetime]) -> str:
     )
 
 
+def _as_of_literal(data_as_of: Optional[datetime]) -> Optional[str]:
+    """The data's end as a timestamptz literal for SQL, e.g. "2026-10-07 09:19:52+08"."""
+    return f"{data_as_of.astimezone(SGT):%Y-%m-%d %H:%M:%S}+08" if data_as_of is not None else None
+
+
+def _sql_clock_rule(data_as_of: Optional[datetime]) -> str:
+    # the model reaches for now() / current_timestamp by habit, and those return the real date;
+    # SQLQueryTool also rejects them, this saves the round trip
+    if data_as_of is None:
+        return ""
+    return (
+        f" In SQL, write this time as the literal TIMESTAMPTZ '{_as_of_literal(data_as_of)}'. Never use "
+        f"now(), current_timestamp or current_date: they return the real date, after the data ends, "
+        f"and the query is rejected."
+    )
+
+
 def _as_of_disclaimer(data_as_of: datetime) -> str:
     """Opens every answer, so the analyst knows which "today" the answer counted from."""
     return (
@@ -325,7 +342,7 @@ class ProposedRAGWorkflow(Workflow):
             prompt_text = (
                 f"{self.step_prompts[WorkflowStepName.GENERATE_SQL_ARGS].text}\n\n"
                 f"Schema:\n{ev.schema_text}\n\n"
-                f"{_as_of_note(data_as_of)}\n\n"
+                f"{_as_of_note(data_as_of)}{_sql_clock_rule(data_as_of)}\n\n"
                 f"Conversation so far:\n{ev.context_str}\n\n"
                 f"Analyst's question: {ev.chat_request.user_input}\n\n"
                 f"Tool calls already made for this question:\n{previous_calls}\n\n"
@@ -342,6 +359,7 @@ class ProposedRAGWorkflow(Workflow):
                 x_column=args.x_column,
                 y_column=args.y_column,
                 value_column=args.value_column,
+                as_of=_as_of_literal(data_as_of),
             )
         elif ev.tool_name == ToolName.SEARCH_FRAUD_PATTERNS:
             await progress.update("Describing the pattern without customer data...")
