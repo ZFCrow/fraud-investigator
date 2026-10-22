@@ -1,0 +1,2 @@
+/* No logo above the chat box on the start screen (Chainlit renders it as img.logo) */
+img.logo { display: none !important; }

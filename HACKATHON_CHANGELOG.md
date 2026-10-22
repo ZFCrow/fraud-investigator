@@ -7,6 +7,44 @@ app, an ingestor that groups log rows into sessions and loads them into Qdrant, 
 search tools, and an LLM judge, all running on an OpenAI model. The entries below are the
 work done for the hackathon.
 
+## 2026-10-22
+
+- **Answers lead with the verdict and the next step.** The answer prompt now puts a one-line
+  bold verdict first, then a suggested next step for the analyst, then the evidence and the
+  trace. A check that finds nothing unusual says so, and names what it checked and against
+  what baseline.
+- **Starter questions.** A new visitor sees six clickable questions instead of an empty chat:
+  one per planted incident and one about an ordinary customer.
+- **Limitations section** added to the README.
+- **The agent knows where the history starts.** Activity covers only the last ~30 days, but
+  accounts go back years, so an ordinary customer came back as "dormant for 2 years", and their
+  first session in the window was flagged as a new country because nothing earlier exists to
+  compare against. The SQL schema, the reasoning step and the answer step now say so. On the
+  clean-case question (Daniel Clarke) the answer is now "nothing unusual in the last 30 days of
+  activity", with no dormancy claim and no false new-country flag.
+- **Shorter answers.** Under ~200 words above the trace, at most one table of 8 rows, each
+  fact said once, and a trace of at most 3 bullets. The exact SQL and output are already in
+  the side panels, read from the real trace. A clean result is the verdict, "No action
+  needed" and the facts checked, and a suggested next step never asks for data the store
+  doesn't have. The "as of" line moved from the top of every answer to the bottom, and the
+  judge's panel is now called "Answer quality". Progress messages are in plain words
+  ("Loading this conversation...", not "No context found in Redis").
+- **SQL repairs see where the query failed.** An invalid query's error now carries the line
+  Postgres pointed at (`At line 28: COUNT(DISTINCT o.promo_code) ...`) and its hint. With
+  only the bare message ("missing FROM-clause entry for table "o""), the repair step had
+  resubmitted the identical query four times on the Samuel Hale question and answered without
+  a baseline. After the change: 3/3 runs correct, judge 0.95-1.0.
+- **Results that disagree get checked.** When one result points at something the others don't
+  show, the reasoning step fetches those rows with SQL instead of leaving the answer to guess,
+  and the answer states any discrepancy it could not resolve.
+- **No flags from one or two orders.** Rewriting the refund query into one CTE per table
+  (the fan-out rule) had dropped its 3-order minimum, so "unusually high refund rate"
+  flagged a customer with 1 refund on 1 order (100%) beside the real outlier. The refund
+  pattern is now written in CTE form with the minimum built in, the schema says any
+  per-customer rate needs at least 3 rows, and the answer shows the counts behind a rate
+  ("9 of 11 orders refunded, 82%"). After the change: 2/2 runs flag only the planted refund
+  abuser, judge 1.0.
+
 ## 2026-10-21
 
 - **SQL can't read the real clock.** The model still wrote `current_timestamp` / `now()` by

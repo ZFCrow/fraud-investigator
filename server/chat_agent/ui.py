@@ -29,7 +29,19 @@ async def start():
     # if your backend needs a session/conversation id, create one here
     cl.user_session.set("session_id", session_id)  # or generate a UUID
 
-    await cl.Message(content="👋 Ask me about customers, sessions, orders, payments or refunds.").send()
+
+# Chainlit shows starters only while the thread is empty, so on_chat_start sends no greeting.
+# One per planted scenario, plus an ordinary customer, to show a clean result is reported as clean.
+@cl.set_starters
+async def starters() -> list[cl.Starter]:
+    return [
+        cl.Starter(label="Samuel Hale's latest order", message="Was there anything unusual about Samuel Hale's most recent order?"),
+        cl.Starter(label="Card testing", message="Are there any sessions that look like card testing?"),
+        cl.Starter(label="High refund rates", message="Which customers have an unusually high refund rate?"),
+        cl.Starter(label="WELCOME50 abuse", message="Is the WELCOME50 promo code being abused?"),
+        cl.Starter(label="One IP, many logins", message="Has any single IP address tried to log into many different accounts?"),
+        cl.Starter(label="A normal customer", message="Is there anything suspicious about Daniel Clarke's account?"),
+    ]
 
 @cl.on_message
 async def main(message: cl.Message):
@@ -255,7 +267,7 @@ async def send_stream_request(chat_request, msg):
                         # appended, so charts already on the message are kept
                         msg.elements.append(
                             cl.Text(
-                                name = f"Metadata",
+                                name = "Answer quality",
                                 content = "\n\n---\n\n".join(sections),
                                 display = "side"
                             )

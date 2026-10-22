@@ -1,0 +1,30 @@
+{
+    "variables": {
+        "light": {
+            "--background": "0 0% 100%",
+            "--card": "0 0% 100%",
+            "--popover": "0 0% 100%",
+            "--muted": "262 20% 92%",
+            "--accent": "262 30% 96%",
+            "--border": "262 15% 88%",
+            "--input": "262 15% 88%",
+            "--sidebar-background": "262 30% 98%",
+            "--primary": "265 55% 40%",
+            "--primary-foreground": "0 0% 100%",
+            "--ring": "265 55% 40%"
+        },
+        "dark": {
+            "--background": "262 20% 9%",
+            "--card": "262 18% 13%",
+            "--popover": "262 18% 13%",
+            "--muted": "262 15% 18%",
+            "--accent": "262 15% 20%",
+            "--border": "262 15% 22%",
+            "--input": "262 15% 22%",
+            "--sidebar-background": "262 22% 7%",
+            "--primary": "265 70% 68%",
+            "--primary-foreground": "262 30% 10%",
+            "--ring": "265 70% 68%"
+        }
+    }
+}

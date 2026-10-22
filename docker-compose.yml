@@ -80,7 +80,7 @@ services:
         env_file:
             - .env
         ports:
-            - "5680:5678"    
+            - "5780:5678"    
         profiles: 
             - ingestor
              
@@ -97,7 +97,8 @@ services:
 
             - ./.chainlit:/app/.chainlit
             - ./chainlit.md:/app/chainlit.md
-        depends_on: 
+            - ./public:/app/public
+        depends_on:
             db: 
                 condition: service_healthy 
             qdrant:
@@ -110,7 +111,7 @@ services:
             - .env
         ports: 
             - "8002:8000"
-            - "5681:5678"  
+            - "5781:5678"  
         profiles:
             - server
 

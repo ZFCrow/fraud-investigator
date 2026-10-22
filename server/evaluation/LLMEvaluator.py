@@ -51,7 +51,7 @@ class LLMEvaluator(IEvaluator):
             f"{data_as_of.astimezone(ZoneInfo('Asia/Singapore')):%Y-%m-%d %H:%M} SGT, and the agent "
             f"treats every question as asked at that moment. Judge relative periods (\"today\", "
             f"\"recent\", \"last 7 days\") against that time, not the real date, and do not count "
-            f"the snapshot's age as stale data. The response's opening line saying so is expected."
+            f"the snapshot's age as stale data. The response's closing line saying so is expected."
             if data_as_of is not None else ""
         )
         prompt_tmpl = PromptTemplate(prompt.text + as_of_note)

@@ -213,7 +213,7 @@ class ProposedWorkflowRag(BaseRAGPipeline):
         #! workflow's job is to make sense of context it's given, not to own fetching
         #! it, and this same chat_hist also feeds the evaluation_service call below.
         #!============================================================================
-        await progress.update("Retrieving past traces for this session...")
+        await progress.update("Loading this conversation...")
 
         redis_key = f"chat_memory:{chat_request.session_id}"
         chat_hist: list[ChatMessage] = []
@@ -221,10 +221,10 @@ class ProposedWorkflowRag(BaseRAGPipeline):
         trace_list_bytes: list[bytes] = await self.cache_repo.get_list(redis_key)
 
         if len(trace_list_bytes) > 0:
-            await progress.update("Found context in Redis. Building chat history from cached traces...")
+            await progress.update("Picking up the earlier questions in this chat...")
             past_traces: list[AgentTrace] = [AgentTrace.model_validate_json(b) for b in trace_list_bytes]
         else:
-            await progress.update("No context found in Redis. Retrieving from database...")
+            await progress.update("Checking for earlier questions in this chat...")
             past_traces: list[AgentTrace] = await self.chat_repo.get_trace_by_session_id(chat_request.session_id)
 
         for trace in past_traces:
@@ -237,7 +237,7 @@ class ProposedWorkflowRag(BaseRAGPipeline):
         #!============================================================================
         #!============================================================================
 
-        await progress.update("Analyzing input...")
+        await progress.update("Reading the question...")
 
         # every question is answered as of the end of the store's data, not the real clock
         # (read per query, so a reseed is picked up without a restart). The judge gets the

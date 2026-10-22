@@ -113,6 +113,16 @@ Joins that multiply rows (fan-out):
   COUNT(DISTINCT ...) does not fix a fan-out SUM.
 
 Important semantics:
+- Data window: sessions, events, orders, payment_attempts and refunds cover only about the
+  last 30 days before the data ends (the exact start is MIN(sessions.started_at)), while
+  customers.created_at can be years older. Activity before the window is missing, not
+  absent: an old account with no earlier orders is not "dormant" and its first order in the
+  window is not its "first purchase". Each customer's first session in the window has no
+  earlier sessions to compare with, so first_time_device / first_time_country is always true
+  for it -- leave it out (or report it separately) when flagging new devices or countries.
+- Rates need a sample: a customer's rate (refunds per order, declines per attempt) over 1 or
+  2 rows is noise -- 1 refund on 1 order is 100%. Rank or flag rates only for customers with
+  at least 3 rows behind them, and return the counts with the rate.
 - Nothing is pre-flagged. There is no "suspicious", "fraud" or "is_new_device" column: every
   finding has to be derived from the rows, and the answer should show the numbers it rests on.
 - A guest has customer_id NULL on sessions, events, orders and payment_attempts. Use
@@ -164,16 +174,20 @@ HAVING COUNT(DISTINCT pa.card_fingerprint) >= 5
 ORDER BY distinct_cards DESC;
 An ordinary shopper uses one or two cards and is rarely declined.
 
-Refund abuse -- refund rate per customer against everyone else:
-SELECT c.email,
-       COUNT(DISTINCT o.id) AS orders,
-       COUNT(DISTINCT r.id) AS refunds,
-       ROUND(COUNT(DISTINCT r.id)::numeric / COUNT(DISTINCT o.id), 2) AS refund_rate
-FROM shop.customers c
-JOIN shop.orders o ON o.customer_id = c.id
-LEFT JOIN shop.refunds r ON r.order_id = o.id
-GROUP BY c.email
-HAVING COUNT(DISTINCT o.id) >= 3
+Refund abuse -- refund rate per customer against everyone else, only for customers with at
+least 3 orders (keep that filter when rewriting the query):
+WITH o AS (SELECT customer_id, COUNT(*) AS orders FROM shop.orders
+           WHERE customer_id IS NOT NULL GROUP BY customer_id HAVING COUNT(*) >= 3),
+     r AS (SELECT customer_id, COUNT(*) AS refunds,
+                  MODE() WITHIN GROUP (ORDER BY reason) AS top_reason,
+                  COUNT(*) FILTER (WHERE reason = 'item_not_received') AS not_received
+           FROM shop.refunds GROUP BY customer_id)
+SELECT c.email, o.orders, COALESCE(r.refunds, 0) AS refunds,
+       ROUND(COALESCE(r.refunds, 0)::numeric / o.orders, 2) AS refund_rate,
+       r.top_reason, r.not_received
+FROM o
+JOIN shop.customers c ON c.id = o.customer_id
+LEFT JOIN r ON r.customer_id = o.customer_id
 ORDER BY refund_rate DESC;
 Also look at whether one reason (e.g. item_not_received) dominates.
 

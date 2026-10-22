@@ -84,10 +84,11 @@ def _sql_clock_rule(data_as_of: Optional[datetime]) -> str:
 
 
 def _as_of_disclaimer(data_as_of: datetime) -> str:
-    """Opens every answer, so the analyst knows which "today" the answer counted from."""
+    """Closes every answer, so the analyst knows which "today" the answer counted from. At the
+    end rather than the top, so the verdict is the first thing on screen."""
     return (
-        f"_Treated as asked on {data_as_of.astimezone(SGT):%d %b %Y, %H:%M} SGT: the store data is "
-        f"a fixed snapshot that ends then, so \"today\" and \"last N days\" count back from that time._\n\n"
+        f"\n\n_As of {data_as_of.astimezone(SGT):%d %b %Y, %H:%M} SGT, when the store data ends: "
+        f"\"today\" and \"last N days\" count back from then._"
     )
 
 
@@ -472,8 +473,8 @@ class ProposedRAGWorkflow(Workflow):
         prompt_text = (
             f"{self.step_prompts[WorkflowStepName.SYNTHESIZE_ANSWER].text}\n\n"
             f"{_as_of_note(data_as_of)} Name the absolute dates any relative period resolved to. "
-            f"The answer already opens with a line saying it was treated as asked at that time -- "
-            f"do not repeat it.\n\n"
+            f"A line saying it was treated as asked at that time is added after the answer -- "
+            f"do not write it yourself.\n\n"
             f"Conversation so far:\n{ev.context_str}\n\n"
             f"Analyst's question: {ev.chat_request.user_input}\n\n"
             f"Tool calls made:\n{_format_observations(ev.observations)}\n\n"
@@ -489,7 +490,7 @@ class ProposedRAGWorkflow(Workflow):
         # added in code, not left to the model, so every answer carries it; a refusal has no
         # data behind it to date
         answer: str = (
-            _as_of_disclaimer(data_as_of) + final.answer
+            final.answer + _as_of_disclaimer(data_as_of)
             if data_as_of is not None and not ev.refused
             else final.answer
         )

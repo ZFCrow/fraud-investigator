@@ -41,10 +41,13 @@ the customer's own history. The agent does that work and shows its reasoning.
   call, up to twice per question; a query that ran and failed (timeout, division by zero)
   counts like any other call.
 - **Evidence, not verdicts.** The prompts require every number to come from a SQL result,
-  every answer to say what the evidence is consistent with and what it was compared against,
-  and to end with a Reasoning/Trace section (tools called, the SQL or filters used).
+  every answer to say what the evidence is consistent with and what it was compared against.
+  An answer leads with a one-line verdict and a suggested next step, stays under about 200
+  words with at most one table, and ends with a short Reasoning/Trace section. The exact SQL,
+  search arguments and output of every call open in side panels, read from the trace rather
+  than from the model's own account.
 - **Answered as of the end of the data.** The store is a fixed snapshot, so "today" and
-  "last 7 days" count back from its latest activity, not the real clock. Every answer opens
+  "last 7 days" count back from its latest activity, not the real clock. Every answer ends
   with the moment it was treated as asked at, and the judge scores against the same time.
 - **Read-only, enforced by the database.** The SQL the model writes runs as a separate
   Postgres user (`shop_reader`) that can only SELECT the nine store tables, in read-only
@@ -179,6 +182,35 @@ search, and answered with a Known pattern section and sources in 42 s.
 ## Other Nebius services
 
 None yet. Token Factory is the only Nebius service this project uses today.
+
+## Limitations and known failures
+
+What the agent does not do, and where it went wrong along the way:
+
+- **Small, synthetic, fixed data.** About 100 customers and 500 sessions with five planted
+  incidents. The agent has not been tried on a real store's volume or noise, and the data is a
+  snapshot: nothing is ingested live, and every question is answered as of its end.
+- **At most 3 tool calls per question.** A question that needs more joins or comparisons gets
+  a partial answer that says what it did not cover. Free SQL repairs (up to two) do not count
+  against the cap.
+- **Investigates, never acts.** The SQL runs as a read-only database user, so the agent can
+  suggest holding an order or reviewing an account but cannot do either.
+- **It answers when asked; it does not watch.** Nothing scans the store on a schedule and
+  raises incidents unprompted.
+- **The judge is a Nemotron grading Nemotron.** The judge runs on Nemotron 3 Super, the same
+  model that writes most of the answer, so its scores are a consistency check, not an
+  independent measure. Nano took 70-105 s per evaluation and sometimes returned incomplete
+  results; Lightning could not produce the nested result shape.
+- **Models fall back on habits the data contradicts.** The SQL step kept writing `now()` and
+  `current_timestamp`, which put "last 7 days" past the end of the data, until those were
+  rejected in code. Joining two of a session's child tables on `session_id` multiplied rows
+  until the schema text warned against it. Both are fixed for the patterns we found. Others
+  like them are likely.
+- **Names can reach the web search.** Emails, IPs, devices, cards, addresses and session ids
+  are blocked in code before a Tavily query is sent. A customer's name can't be matched by a
+  pattern, so only the prompt keeps names out.
+- **Shared demo limits.** The public demo has a per-visitor per-minute limit and a daily cap
+  across all visitors. Once the cap is reached, everyone waits until the next day.
 
 ## Setup
 

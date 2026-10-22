@@ -21,6 +21,7 @@ COPY ./shared /app/shared
 # Chainlit config + welcome page
 COPY ./.chainlit /app/.chainlit
 COPY ./chainlit.md /app/chainlit.md
+COPY ./public /app/public
 ENV PYTHONPATH=/app
 
 # Clean production execution without debug tools
