@@ -11,6 +11,7 @@ License: [MIT](LICENSE)
 
 - Demo: <https://zfcrow.online>
 - Video: <https://www.youtube.com/watch?v=DWdFLxHhCb0>
+- Slides: [docs/slides.pdf](docs/slides.pdf)
 
 ## What it does
 
