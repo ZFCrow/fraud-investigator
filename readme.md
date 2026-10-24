@@ -9,13 +9,13 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (Best Apps and Agents trac
 
 License: [MIT](LICENSE)
 
-- Demo: <http://zfcrow.online/ui/>
-- Video: _TBD_
+- Demo: <https://zfcrow.online>
+- Video: <https://www.youtube.com/watch?v=DWdFLxHhCb0>
 
 ## What it does
 
 Fraud rarely sits in one row. An account takeover is a first-time device, a password reset, an
-address change and an order thirty times the customer's usual, spread across four tables.
+address change and an order over 100 times the customer's usual, spread across four tables.
 Finding it by hand means joining sessions to events to payments to orders and comparing against
 the customer's own history. The agent does that work and shows its reasoning.
 
