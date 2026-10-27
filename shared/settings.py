@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     DB_USER: str = "shop"
     DB_PASSWORD: str = "shop_dev"
     DB_HOST: str = "localhost"
-    DB_PORT: int = 5434  # host ports below are this fork's (see docker-compose.yml / CLAUDE.md)
+    DB_PORT: int = 5434  # host ports below are this fork's (see docker-compose.yml / readme.md)
     DB_NAME: str = "shop"  # single database holding every table
     # the role the agent's own SQL runs as: SELECT on the store tables and nothing else
     # (created by db_init/03_create_users.sh, granted by migration b2d4f6a8c0e1)
