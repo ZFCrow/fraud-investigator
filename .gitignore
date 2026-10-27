@@ -83,6 +83,7 @@ deploy-test/
 # Demo video and slide deck: kept out of the public repo
 video/
 slides/
+images/
 # local AI-assistant config: kept out of the public repo
 .claude/
 CLAUDE.md
